@@ -6,6 +6,8 @@ import {
   Stack,
   StackProps,
   CfnOutput,
+  aws_cognito as cognito,
+
 
 } from "aws-cdk-lib";
 import { Construct } from 'constructs';
@@ -13,13 +15,11 @@ import { HttpLambdaIntegration } from "@aws-cdk/aws-apigatewayv2-integrations-al
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import * as aws_logs from 'aws-cdk-lib/aws-logs';
 import * as apigwv2 from '@aws-cdk/aws-apigatewayv2-alpha';
-import * as actions from "aws-cdk-lib/aws-ses-actions";
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as dotenv from 'dotenv';
+import { HttpUserPoolAuthorizer } from '@aws-cdk/aws-apigatewayv2-authorizers-alpha';
 
-
-// import * as sqs from 'aws-cdk-lib/aws-sqs';
-
+// At some point it may make sense to split this into muiltiple stacks. DymamoDB, Admin Functionliaty, and Form Functionality for example.
 export class FormHandlerStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
@@ -50,7 +50,68 @@ export class FormHandlerStack extends Stack {
 
     // Check if environment is production
     const isProd = process.env.NODE_ENV === 'production';
-    // The code that defines your stack goes here
+
+
+
+    // Admin Section
+    // Create a Cognito User Pool for Admins
+    const userPool = new cognito.UserPool(this, 'formHandlerAdminPool', {
+      selfSignUpEnabled: false, // Allow users to sign up
+      autoVerify: { email: true }, // Automatically verify email addresses
+      signInAliases: { email: true }, // Allow sign in using email
+    });
+    
+
+    // Create a User Pool Client
+    const userPoolClient = new cognito.UserPoolClient(this, 'formHandlerAdminPoolClient', {
+      userPool,
+      generateSecret: false, // Don't need to generate secret for web app client if you're using USER_SRP_AUTH
+    });
+
+
+    let adminLambdaName = "form-handler-admin-lambda";
+    const adminMemorySize = 512;
+    const adminLambda = new NodejsFunction(this, adminLambdaName, {
+      functionName: adminLambdaName,
+      description: "Saves Form submissions to DynamoDB and send alert email",
+      runtime: aws_lambda.Runtime.NODEJS_18_X,
+      memorySize: adminMemorySize,
+      timeout: Duration.seconds(30),
+      entry: "functions/admin/index.ts", 
+      handler: "handler", 
+      retryAttempts: 2,
+      bundling: {
+        minify: false, // minify code, defaults to false
+        
+
+      },
+      environment: {
+        FORM_TABLE_NAME: formTableName,
+        FORM_SUBMISSIONS_TABLE_NAME: formSubmissionTableName,
+      },
+      logRetention: aws_logs.RetentionDays.ONE_WEEK,
+    });
+
+    const adminAuthorizer = new HttpUserPoolAuthorizer('AdminAuthorizer', userPool);
+
+    const adminLambdaIntegration = new HttpLambdaIntegration(
+      "adminLambdaIntegration",
+      adminLambda
+    );
+
+    const adminApi = new apigwv2.HttpApi(this, 'FormHandlerAdminAPI', {
+      apiName: 'FormHandlerAdminAPI',
+      defaultIntegration: adminLambdaIntegration,
+      defaultAuthorizer: adminAuthorizer,
+      corsPreflight: {
+        allowOrigins: ['*'],
+        allowMethods: [apigwv2.CorsHttpMethod.GET, apigwv2.CorsHttpMethod.POST, apigwv2.CorsHttpMethod.OPTIONS],
+      },
+    });
+    
+
+    
+
 
     //DynamoDB Tables
 
@@ -71,7 +132,7 @@ export class FormHandlerStack extends Stack {
 
 
     // Create a DynamoDB table to store form submissions
-    const table = new aws_dynamodb.Table(this, formSubmissionTableName, {
+    const formDataTable = new aws_dynamodb.Table(this, formSubmissionTableName, {
       tableName: formSubmissionTableName,
       partitionKey: {
         name: 'id',
@@ -85,7 +146,7 @@ export class FormHandlerStack extends Stack {
       removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
     });
 
-    table.addGlobalSecondaryIndex({
+    formDataTable.addGlobalSecondaryIndex({
       indexName: 'formId-timestamp-index',
       partitionKey: {
         name: 'formId',
@@ -98,7 +159,7 @@ export class FormHandlerStack extends Stack {
       projectionType: aws_dynamodb.ProjectionType.ALL,
     });
 
-    table.addGlobalSecondaryIndex({
+    formDataTable.addGlobalSecondaryIndex({
       indexName: 'formId-sourceIP-index',
       partitionKey: {
         name: 'formId',
@@ -136,8 +197,13 @@ export class FormHandlerStack extends Stack {
       logRetention: aws_logs.RetentionDays.ONE_WEEK,
     });
 
-    // Grant write permissions to our Lambda function for our DynamoDB table
-    table.grantWriteData(dynamoLambda);
+    // Grant  permissions to our Lambda functions for our DynamoDB tables
+    formDataTable.grantWriteData(dynamoLambda);
+    formDataTable.grantReadWriteData(adminLambda);
+
+    formTable.grantReadData(dynamoLambda);
+    formTable.grantReadWriteData(adminLambda);
+
 
     // Allow our Lambda function to send emails via SES
     const sesPolicy = new iam.PolicyStatement({
@@ -202,6 +268,11 @@ export class FormHandlerStack extends Stack {
     new CfnOutput(this, 'HttpApiUrl', {
       value: httpApi.url!,
     });
+
+    new CfnOutput(this, 'AdminApiUrl', {
+      value: adminApi.url!,
+    });
+
 
   }
 }
