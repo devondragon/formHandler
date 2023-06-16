@@ -1,4 +1,18 @@
+# Ignore .js files
 *.js
+
+# Except for those in admin-html directory and its subdirectories
+!/admin-html/**/*.js
+
+# Don't check-in the values in this file
+/admin-html/js/aws-exports.js
+
+# Ignore .js files in bin, lib, and functions directories
+/bin/**/*.js
+/lib/**/*.js
+/functions/**/*.js
+
+
 !jest.config.js
 *.d.ts
 node_modules

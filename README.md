@@ -23,6 +23,34 @@ I plan to add a web admin which will allow you to configure forms with form ID v
 There will also be a web reporting engine to allow you to view, search, and export form submission data.
 
 
+## Setting up the Admin
+
+Unfortunately this currently requires a few manual steps.  
+
+### Configure Web Admin for Cognito Auth
+
+The first tiem you run the 'cdk deploy' step you will get the Cognito Admin User Pool Id and Web Client Id output from the cdk command.  
+
+Copy the admin-html/js/aws-exports.js-example file to aws-exports.js, and replace the placeholders with the values from your CDK app output.  Save the file.
+
+Then, re-run 'cdk deploy' and it will copy the new file up to your Admin Web App's S3 bucket.
+
+### Create Admin User in Cognito
+
+You will need to create one, or more, admin users, who will be able to access the web admin and administer your forms.
+
+You can do this from the Cognito Pool Admin, or you can create them from the command line.  Replace the placeholder values, denoted with '$$' in each of these two commands, and run them.  The first command creates the user, and the second command tells Cognito that the password is permanent and doesn't need to be changed on first login.
+
+```bash
+aws cognito-idp admin-create-user --user-pool-id us-west-2_$$POOLID$$ --username $$adminusername$$ --temporary-password $$SUPERSECUREPASSWORD$$ --message-action SUPPRESS
+ 
+aws cognito-idp admin-set-user-password --user-pool-id us-west-2_$$POOLID$$ --username $$adminusername$$ --password $$SUPERSECUREPASSWORD$$ --permanent
+```
+
+
+
+
+
 ## Testing the Application
 
 Included in the repository are a test HTML file (`index.html`) and a JavaScript file (`formHandler.js`) which serve as a simple front-end to interact with the deployed serverless backend.

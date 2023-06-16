@@ -1,0 +1,6 @@
+var awsExports = {
+  "aws_project_region": "us-west-2",
+  "aws_cognito_region": "us-west-2",
+  "aws_user_pools_id": "us-west-2_YWE4Hlj70",
+  "aws_user_pools_web_client_id": "1c8dt4s1vgs00fr9jd6e4f4bo6",
+};

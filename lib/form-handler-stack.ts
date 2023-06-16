@@ -7,8 +7,8 @@ import {
   StackProps,
   CfnOutput,
   aws_cognito as cognito,
-
-
+  aws_s3_deployment as s3deploy,
+  aws_s3 as s3,
 } from "aws-cdk-lib";
 import { Construct } from 'constructs';
 import { HttpLambdaIntegration } from "@aws-cdk/aws-apigatewayv2-integrations-alpha";
@@ -58,9 +58,17 @@ export class FormHandlerStack extends Stack {
     const userPool = new cognito.UserPool(this, 'formHandlerAdminPool', {
       selfSignUpEnabled: false, // Allow users to sign up
       autoVerify: { email: true }, // Automatically verify email addresses
-      signInAliases: { email: true }, // Allow sign in using email
+      signInAliases: { email: true, username: true }, // Allow sign in using email
+      removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY, // Don't delete the Cognito User Pool when deleting the CloudFormation stack
+
     });
-    
+
+    const cognitoDomainPrefix = 'fh-admin';
+    userPool.addDomain('formHandlerAdminPoolDomain', {
+      cognitoDomain: {
+        domainPrefix: cognitoDomainPrefix,
+      },
+    });
 
     // Create a User Pool Client
     const userPoolClient = new cognito.UserPoolClient(this, 'formHandlerAdminPoolClient', {
@@ -77,12 +85,12 @@ export class FormHandlerStack extends Stack {
       runtime: aws_lambda.Runtime.NODEJS_18_X,
       memorySize: adminMemorySize,
       timeout: Duration.seconds(30),
-      entry: "functions/admin/index.ts", 
-      handler: "handler", 
+      entry: "functions/admin/index.ts",
+      handler: "handler",
       retryAttempts: 2,
       bundling: {
         minify: false, // minify code, defaults to false
-        
+
 
       },
       environment: {
@@ -108,9 +116,21 @@ export class FormHandlerStack extends Stack {
         allowMethods: [apigwv2.CorsHttpMethod.GET, apigwv2.CorsHttpMethod.POST, apigwv2.CorsHttpMethod.OPTIONS],
       },
     });
-    
 
-    
+    // Create an S3 bucket
+    const adminWebsiteBucket = new s3.Bucket(this, 'AdminWebsiteBucket', {
+      websiteIndexDocument: 'index.html',
+      websiteErrorDocument: 'error.html',
+      publicReadAccess: true,
+      // other bucket options...
+    });
+
+    // Deploy the admin website to the bucket
+    new s3deploy.BucketDeployment(this, 'DeployAdminWebsite', {
+      sources: [s3deploy.Source.asset('./admin-html')],
+      destinationBucket: adminWebsiteBucket,
+    });
+
 
 
     //DynamoDB Tables
@@ -264,14 +284,35 @@ export class FormHandlerStack extends Stack {
       integration: optionsLambdaIntegration,
     });
 
+    new CfnOutput(this, 'aa-User Pool JS Config Data', {
+      value: "The following values will need to be added to the aws-exports.js file in the js directory of the adminwebsite S3 bucket.",
+      description: 'Information for the Admin User Pool Client',
+    });
+
+    new CfnOutput(this, 'ab-Region', {
+      value: this.region,
+    });
+
+    new CfnOutput(this, 'ac-AdminUserPoolId', {
+      value: userPool.userPoolId,
+      description: 'The ID of the Admin User Pool Client',
+    });
+
+    new CfnOutput(this, 'ad-AdminUserPoolWebClientId', {
+      value: userPoolClient.userPoolClientId,
+      description: 'The Web Client ID of the Admin User Pool Client',
+    });
+
+
     // Output the HTTP API Gateway URL as a CloudFormation output
-    new CfnOutput(this, 'HttpApiUrl', {
+    new CfnOutput(this, 'ba-HttpApiUrl', {
       value: httpApi.url!,
     });
 
-    new CfnOutput(this, 'AdminApiUrl', {
+    new CfnOutput(this, 'bb-AdminApiUrl', {
       value: adminApi.url!,
     });
+
 
 
   }
