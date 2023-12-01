@@ -148,6 +148,8 @@ export class FormHandlerStack extends Stack {
       destinationBucket: adminWebsiteBucket,
     });
 
+    const adminIndexFileName = 'index.html'; // Replace with your file path in the bucket
+    const adminSiteUrl = `https://${adminWebsiteBucket.bucketName}.s3.${this.region}.amazonaws.com/${adminIndexFileName}`;
 
 
     //DynamoDB Tables
@@ -328,6 +330,10 @@ export class FormHandlerStack extends Stack {
 
     new CfnOutput(this, 'bb-AdminApiUrl', {
       value: adminApi.url!,
+    });
+
+    new CfnOutput(this, 'bc-AdminSiteUrl', {
+      value: adminSiteUrl!,
     });
 
 
