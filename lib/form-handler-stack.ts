@@ -18,6 +18,7 @@ import * as apigwv2 from '@aws-cdk/aws-apigatewayv2-alpha';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as dotenv from 'dotenv';
 import { HttpUserPoolAuthorizer } from '@aws-cdk/aws-apigatewayv2-authorizers-alpha';
+import { Effect, PolicyStatement, StarPrincipal } from "aws-cdk-lib/aws-iam";
 
 // At some point it may make sense to split this into muiltiple stacks. DymamoDB, Admin Functionliaty, and Form Functionality for example.
 export class FormHandlerStack extends Stack {
@@ -122,8 +123,24 @@ export class FormHandlerStack extends Stack {
       websiteIndexDocument: 'index.html',
       websiteErrorDocument: 'error.html',
       publicReadAccess: true,
+      removalPolicy: RemovalPolicy.DESTROY,
+      blockPublicAccess: {
+        blockPublicPolicy: false,
+        blockPublicAcls: false,
+        ignorePublicAcls: false,
+        restrictPublicBuckets: false,
+      },
       // other bucket options...
     });
+
+    adminWebsiteBucket.addToResourcePolicy(
+      new PolicyStatement({
+        actions: ['s3:GetObject'],
+        effect: Effect.ALLOW,
+        principals: [new StarPrincipal()],
+        resources: [adminWebsiteBucket.arnForObjects('*')],
+      })
+    )
 
     // Deploy the admin website to the bucket
     new s3deploy.BucketDeployment(this, 'DeployAdminWebsite', {
