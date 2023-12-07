@@ -1,4 +1,3 @@
-// Replace these values with those output by the cdk stack deploy command
 import React from 'react';
 import ReactDOM from 'react-dom';
 import Amplify from 'aws-amplify';
