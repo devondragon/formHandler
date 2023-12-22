@@ -1,7 +1,7 @@
 
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 
-export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+export const handler = async (_event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
     const headers: { [header: string]: string } = {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Methods': 'OPTIONS,POST',

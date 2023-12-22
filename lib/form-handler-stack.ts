@@ -20,7 +20,7 @@ import * as dotenv from 'dotenv';
 import { HttpUserPoolAuthorizer } from '@aws-cdk/aws-apigatewayv2-authorizers-alpha';
 import { Effect, PolicyStatement, StarPrincipal } from "aws-cdk-lib/aws-iam";
 
-// At some point it may make sense to split this into muiltiple stacks. DymamoDB, Admin Functionliaty, and Form Functionality for example.
+// At some point it may make sense to split this into muiltiple stacks. DymamoDB, Admin Functionality, and Form Functionality for example.
 export class FormHandlerStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
@@ -49,9 +49,6 @@ export class FormHandlerStack extends Stack {
       throw new Error('Email to address is undefined. Make sure it is set in the environment variables.');
     }
 
-    // Check if environment is production
-    const isProd = process.env.NODE_ENV === 'production';
-
 
 
     // Admin Section
@@ -60,7 +57,7 @@ export class FormHandlerStack extends Stack {
       selfSignUpEnabled: false, // Allow users to sign up
       autoVerify: { email: true }, // Automatically verify email addresses
       signInAliases: { email: true, username: true }, // Allow sign in using email
-      removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY, // Don't delete the Cognito User Pool when deleting the CloudFormation stack
+      removalPolicy: RemovalPolicy.RETAIN, // Don't delete the Cognito User Pool when deleting the CloudFormation stack
 
     });
 
@@ -166,7 +163,7 @@ export class FormHandlerStack extends Stack {
         type: aws_dynamodb.AttributeType.STRING,
       },
       billingMode: aws_dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+      removalPolicy: RemovalPolicy.RETAIN,
     });
 
 
@@ -182,7 +179,7 @@ export class FormHandlerStack extends Stack {
         type: aws_dynamodb.AttributeType.STRING,
       },
       billingMode: aws_dynamodb.BillingMode.PAY_PER_REQUEST, // Switching to PAY_PER_REQUEST as it's generally more cost effective for GSIs
-      removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+      removalPolicy: RemovalPolicy.RETAIN,
     });
 
     formDataTable.addGlobalSecondaryIndex({
@@ -253,8 +250,6 @@ export class FormHandlerStack extends Stack {
 
     // Add the policy to our Lambda function's role
     dynamoLambda.addToRolePolicy(sesPolicy);
-
-    const logGroup = new aws_logs.LogGroup(this, 'ApiGatewayAccessLogs-FormHandler');
 
     // Define API Gateway integration with our main Lambda function
     const dynamoLambdaIntegration = new HttpLambdaIntegration(
@@ -335,8 +330,6 @@ export class FormHandlerStack extends Stack {
     new CfnOutput(this, 'bc-AdminSiteUrl', {
       value: adminSiteUrl!,
     });
-
-
 
   }
 }

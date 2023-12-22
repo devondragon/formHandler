@@ -1,7 +1,7 @@
-import { DynamoDB } from 'aws-sdk';
+import DynamoDB from 'aws-sdk/clients/dynamodb';
+import SES from 'aws-sdk/clients/ses';
 import { Handler, Context, Callback } from 'aws-lambda';
 import { v4 as uuidv4 } from 'uuid';
-import { SES } from "aws-sdk";
 import { SendEmailRequest } from "aws-sdk/clients/ses";
 
 // create AWS SDK clients
