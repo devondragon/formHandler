@@ -164,11 +164,21 @@ function buildKeyCondition(formId: string, from?: string, to?: string): KeyCondi
   };
 }
 
+/**
+ * Budgets on a single call's scan. A search term is matched in memory, so a
+ * query that matches nothing walks the whole partition; without a ceiling that
+ * walk runs until the Lambda times out and the caller gets nothing back.
+ * Stopping early returns the page key instead, so the caller can resume.
+ */
+export const MAX_PAGES_PER_CALL = 50;
+export const MAX_QUERY_MS = 20_000;
+
 /** DynamoDB-backed access to submissions via the `formId-timestamp-index` GSI. */
 export class SubmissionRepository {
   constructor(
     private readonly client: DynamoDBDocumentClient,
-    private readonly tableName: string
+    private readonly tableName: string,
+    private readonly now: () => number = Date.now
   ) {}
 
   async query(params: SubmissionQueryParams): Promise<SubmissionQueryResult> {
@@ -180,6 +190,8 @@ export class SubmissionRepository {
       ? (decodeCursor(params.cursor) as unknown as Record<string, unknown>)
       : undefined;
     let nextCursor: string | undefined;
+    const deadline = this.now() + MAX_QUERY_MS;
+    let pages = 0;
 
     while (true) {
       const result = await this.client.send(
@@ -191,8 +203,15 @@ export class SubmissionRepository {
           ExpressionAttributeValues: keyCondition.ExpressionAttributeValues,
           ScanIndexForward: false,
           ExclusiveStartKey: exclusiveStartKey,
+          // Without a search term every item read counts toward `limit`, so
+          // DynamoDB can stop the page there. With `q` the matching happens in
+          // memory afterwards, so a page capped at `limit` would usually come
+          // back short and cost an extra round trip per page; let DynamoDB fill
+          // its own 1 MB page instead.
+          Limit: q ? undefined : limit,
         })
       );
+      pages += 1;
 
       const items = (result.Items ?? []) as Submission[];
       let truncatedMidPage = false;
@@ -224,6 +243,10 @@ export class SubmissionRepository {
       if (!exclusiveStartKey) {
         break;
       }
+      if (pages >= MAX_PAGES_PER_CALL || this.now() >= deadline) {
+        nextCursor = encodeCursor(exclusiveStartKey as unknown as SubmissionCursorKey);
+        break;
+      }
     }
 
     return nextCursor ? { submissions: collected, nextCursor } : { submissions: collected };
@@ -236,6 +259,8 @@ export class SubmissionRepository {
     const collected: Submission[] = [];
     let exclusiveStartKey: Record<string, unknown> | undefined;
     let truncated = false;
+    const deadline = this.now() + MAX_QUERY_MS;
+    let pages = 0;
 
     while (true) {
       const result = await this.client.send(
@@ -249,6 +274,7 @@ export class SubmissionRepository {
           ExclusiveStartKey: exclusiveStartKey,
         })
       );
+      pages += 1;
 
       const items = (result.Items ?? []) as Submission[];
 
@@ -259,6 +285,10 @@ export class SubmissionRepository {
         }
         collected.push(item);
         if (collected.length >= maxRows) {
+          // Conservative when `q` is set: the items left in this page or in
+          // later pages may all fail the search, in which case nothing was
+          // actually dropped. Reporting truncated then is a false positive,
+          // which is the safe direction to be wrong in.
           truncated = i < items.length - 1 || !!result.LastEvaluatedKey;
           return { submissions: collected, truncated };
         }
@@ -266,6 +296,10 @@ export class SubmissionRepository {
 
       exclusiveStartKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
       if (!exclusiveStartKey) {
+        break;
+      }
+      if (pages >= MAX_PAGES_PER_CALL || this.now() >= deadline) {
+        truncated = true;
         break;
       }
     }

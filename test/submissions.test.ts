@@ -5,6 +5,8 @@ import {
   decodeCursor,
   encodeCursor,
   matchesSearch,
+  MAX_PAGES_PER_CALL,
+  MAX_QUERY_MS,
   SubmissionRepository,
   toCsv,
 } from '../functions/shared/submissions';
@@ -385,6 +387,86 @@ describe('SubmissionRepository', () => {
         timestamp: '2026-01-04T00:00:00.000Z',
         formId: 'contact-us',
       });
+    });
+  });
+
+  describe('scan budgets', () => {
+    const lastKey = { id: 'k', timestamp: '2026-01-01T00:00:00.000Z', formId: 'contact-us' };
+
+    /** Every page carries one non-matching item and another page after it. */
+    function resolveEndlessPages() {
+      ddbMock.on(QueryCommand).resolves({
+        Items: [item('x', '2026-01-01T00:00:00.000Z', { name: 'Bob' })],
+        LastEvaluatedKey: lastKey,
+      });
+    }
+
+    /** A clock that jumps past the query deadline after the first reading. */
+    function trippingClock() {
+      let reading = 0;
+      return () => {
+        const value = reading;
+        reading += MAX_QUERY_MS + 1;
+        return value;
+      };
+    }
+
+    test('query stops at the page budget and returns a resumable cursor', async () => {
+      resolveEndlessPages();
+
+      const result = await repository.query({ formId: 'contact-us', q: 'jane', limit: 200 });
+
+      expect(result.submissions).toHaveLength(0);
+      expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(MAX_PAGES_PER_CALL);
+      expect(decodeCursor(result.nextCursor as string)).toEqual(lastKey);
+    });
+
+    test('query stops at the time budget and returns a resumable cursor', async () => {
+      resolveEndlessPages();
+      const timed = new SubmissionRepository(client, 'formSubmissions', trippingClock());
+
+      const result = await timed.query({ formId: 'contact-us', q: 'jane', limit: 200 });
+
+      expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(1);
+      expect(decodeCursor(result.nextCursor as string)).toEqual(lastKey);
+    });
+
+    test('queryAll stops at the page budget and reports truncated', async () => {
+      resolveEndlessPages();
+
+      const result = await repository.queryAll({ formId: 'contact-us', q: 'jane', maxRows: 10000 });
+
+      expect(result.submissions).toHaveLength(0);
+      expect(result.truncated).toBe(true);
+      expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(MAX_PAGES_PER_CALL);
+    });
+
+    test('queryAll stops at the time budget and reports truncated', async () => {
+      resolveEndlessPages();
+      const timed = new SubmissionRepository(client, 'formSubmissions', trippingClock());
+
+      const result = await timed.queryAll({ formId: 'contact-us', q: 'jane', maxRows: 10000 });
+
+      expect(result.truncated).toBe(true);
+      expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(1);
+    });
+  });
+
+  describe('page size', () => {
+    test('query caps the DynamoDB page at the limit when there is no search term', async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [] });
+
+      await repository.query({ formId: 'contact-us', limit: 25 });
+
+      expect(ddbMock.commandCalls(QueryCommand)[0].args[0].input.Limit).toBe(25);
+    });
+
+    test('query leaves the page size to DynamoDB when a search term is present', async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [] });
+
+      await repository.query({ formId: 'contact-us', q: 'jane', limit: 25 });
+
+      expect(ddbMock.commandCalls(QueryCommand)[0].args[0].input.Limit).toBeUndefined();
     });
   });
 
