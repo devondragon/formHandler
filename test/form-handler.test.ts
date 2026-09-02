@@ -105,8 +105,6 @@ describe('FormHandlerStack', () => {
   });
 
   test('grants the admin Lambda dynamodb:Query on the submissions table and its GSIs', () => {
-    const template = buildTemplate();
-
     template.hasResourceProperties(
       'AWS::IAM::Policy',
       Match.objectLike({
