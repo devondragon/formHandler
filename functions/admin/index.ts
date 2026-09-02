@@ -117,9 +117,27 @@ function getRequestBody(event: APIGatewayProxyEventV2): string | undefined {
 
 const FORM_ITEM_PATH = /^\/api\/forms\/([^/]+)$/;
 
+/**
+ * API Gateway populates `requestContext.authorizer.jwt` only when a JWT authorizer
+ * accepted the request. The authorizer on the `ANY /api/{proxy+}` route is the real
+ * authentication boundary; this check is defense in depth so a route that was wired
+ * up without an authorizer cannot reach the data.
+ */
+function hasJwtClaims(event: APIGatewayProxyEventV2): boolean {
+  const { authorizer } = event.requestContext as {
+    authorizer?: { jwt?: { claims?: Record<string, unknown> } };
+  };
+  return authorizer?.jwt?.claims !== undefined;
+}
+
 async function route(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
   const method = event.requestContext.http.method;
   const rawPath = event.rawPath;
+
+  if (rawPath.startsWith('/api/') && !hasJwtClaims(event)) {
+    console.warn('Rejecting an /api request that carries no JWT authorizer claims', rawPath);
+    return json(401, { message: 'Unauthorized' });
+  }
 
   if (rawPath === '/' || rawPath === '/index.html') {
     return method === 'GET' ? serveIndexHtml() : json(405, { message: 'Method not allowed' });

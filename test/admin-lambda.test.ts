@@ -5,36 +5,49 @@ import * as adminModule from '../functions/admin';
 
 const ddbMock = mockClient(adminModule.documentClient);
 
+/**
+ * Builds an HTTP API payload v2 event. `authorized` mirrors what API Gateway does:
+ * `requestContext.authorizer.jwt` is present only when a JWT authorizer accepted
+ * the request, so passing `false` simulates an `/api` route reached without one.
+ */
 function makeEvent(
   method: string,
   path: string,
   body?: string,
-  isBase64Encoded = false
+  isBase64Encoded = false,
+  authorized = true
 ): APIGatewayProxyEventV2 {
+  const authorizerContext = authorized
+    ? { authorizer: { jwt: { claims: { sub: 'test' }, scopes: null } } }
+    : {};
+
+  const requestContext = {
+    accountId: '123456789012',
+    apiId: 'admin-api',
+    domainName: 'admin.example.com',
+    domainPrefix: 'admin',
+    http: {
+      method,
+      path,
+      protocol: 'HTTP/1.1',
+      sourceIp: '127.0.0.1',
+      userAgent: 'jest',
+    },
+    requestId: 'req-1',
+    routeKey: `${method} ${path}`,
+    stage: '$default',
+    time: '09/Apr/2015:12:34:56 +0000',
+    timeEpoch: 1428582896000,
+    ...authorizerContext,
+  };
+
   return {
     version: '2.0',
     routeKey: `${method} ${path}`,
     rawPath: path,
     rawQueryString: '',
     headers: {},
-    requestContext: {
-      accountId: '123456789012',
-      apiId: 'admin-api',
-      domainName: 'admin.example.com',
-      domainPrefix: 'admin',
-      http: {
-        method,
-        path,
-        protocol: 'HTTP/1.1',
-        sourceIp: '127.0.0.1',
-        userAgent: 'jest',
-      },
-      requestId: 'req-1',
-      routeKey: `${method} ${path}`,
-      stage: '$default',
-      time: '09/Apr/2015:12:34:56 +0000',
-      timeEpoch: 1428582896000,
-    },
+    requestContext,
     body,
     isBase64Encoded,
   };
@@ -52,12 +65,19 @@ const existingForm = {
 };
 
 beforeEach(() => {
+  jest.spyOn(console, 'warn').mockImplementation(() => {});
+  jest.spyOn(console, 'error').mockImplementation(() => {});
+
   ddbMock.reset();
   process.env.FORM_TABLE_NAME = 'forms';
   process.env.USER_POOL_ID = 'us-east-1_ABC123';
   process.env.USER_POOL_CLIENT_ID = 'client123abc';
   process.env.AWS_REGION = 'us-east-1';
   delete process.env.COGNITO_REGION;
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
 });
 
 describe('static UI serving', () => {
@@ -257,6 +277,27 @@ describe('DELETE /api/forms/{formId}', () => {
     const deleteCalls = ddbMock.commandCalls(DeleteCommand);
     expect(deleteCalls).toHaveLength(1);
     expect(deleteCalls[0].args[0].input.TableName).toBe('forms');
+  });
+});
+
+describe('authorization', () => {
+  test('an /api request without the JWT authorizer context returns 401 and issues no DynamoDB command', async () => {
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms', undefined, false, false)
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(401);
+    expect(result.headers?.['Content-Type']).toBe('application/json');
+    expect(JSON.parse(result.body as string)).toEqual({ message: 'Unauthorized' });
+    expect(ddbMock.calls()).toHaveLength(0);
+  });
+
+  test('static routes are still served without the JWT authorizer context', async () => {
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/', undefined, false, false)
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(200);
   });
 });
 
