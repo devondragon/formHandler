@@ -179,6 +179,32 @@ test('returns 500 when sending the alert email fails', async () => {
   });
 });
 
+test('accepts a submission with no X-Forwarded-For header', async () => {
+  const rawHeaders = { ...rawEvent.headers };
+  delete rawHeaders['X-Forwarded-For'];
+  delete rawHeaders['x-forwarded-for'];
+  const event = { ...buildEvent(), headers: rawHeaders };
+
+  const result = (await handlerModule.handler(event)) as APIGatewayProxyStructuredResultV2;
+
+  expect(result.statusCode).toBe(200);
+
+  const putCalls = documentMock.commandCalls(PutCommand);
+  expect(putCalls).toHaveLength(1);
+  const putInput = putCalls[0].args[0].input as Record<string, any>;
+  expect(putInput.Item.forwardedFor).toBeUndefined();
+});
+
+// aws-sdk-client-mock replaces `documentClient.send` outright, so the
+// PutCommand marshalling middleware (the code path that actually throws on
+// undefined values) never runs against the mock. The above test therefore
+// can't reproduce the real 500 on its own; this assertion pins down the
+// client configuration that fixes it.
+test('DynamoDBDocumentClient is configured to drop undefined values when marshalling', () => {
+  const translateConfig = (handlerModule.documentClient as any).config?.translateConfig;
+  expect(translateConfig?.marshallOptions?.removeUndefinedValues).toBe(true);
+});
+
 test('escapes HTML in submitted field values before emailing them', async () => {
   const body = JSON.stringify({ formId: '1234', name: '<script>alert(1)</script>' });
   const event = buildEvent(body);

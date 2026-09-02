@@ -11,7 +11,9 @@ export const dynamoClient = process.env.AWS_SAM_LOCAL
     // Linux: new DynamoDBClient({ endpoint: "http://127.0.0.1:8000" })
     : new DynamoDBClient();
 
-export const documentClient = DynamoDBDocumentClient.from(dynamoClient);
+export const documentClient = DynamoDBDocumentClient.from(dynamoClient, {
+    marshallOptions: { removeUndefinedValues: true },
+});
 export const sesClient = new SESClient();
 
 
