@@ -104,6 +104,32 @@ describe('FormHandlerStack', () => {
     });
   });
 
+  test('grants the admin Lambda dynamodb:Query on the submissions table and its GSIs', () => {
+    template.hasResourceProperties(
+      'AWS::IAM::Policy',
+      Match.objectLike({
+        // Naming the role matters: the form-handler Lambda's policy also grants
+        // dynamodb:Query on an index, so without this the assertion passes even
+        // when the admin Lambda has no grant at all.
+        Roles: Match.arrayWith([
+          { Ref: Match.stringLikeRegexp('formhandleradminlambdaServiceRole.*') },
+        ]),
+        PolicyDocument: Match.objectLike({
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: Match.arrayWith(['dynamodb:Query']),
+              Resource: Match.arrayWith([
+                Match.objectLike({
+                  'Fn::Join': ['', Match.arrayWith(['/index/*'])],
+                }),
+              ]),
+            }),
+          ]),
+        }),
+      })
+    );
+  });
+
   test('creates a single admin user pool that only administrators can add users to', () => {
     template.resourceCountIs('AWS::Cognito::UserPool', 1);
     template.hasResourceProperties('AWS::Cognito::UserPool', {

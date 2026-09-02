@@ -3,7 +3,15 @@ import * as path from 'path';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { FormConfigRepository, validateFormConfig } from '../shared/form-config';
+import { FORM_ID_PATTERN, FormConfigRepository, validateFormConfig } from '../shared/form-config';
+import {
+  csvColumns,
+  csvHeaderLine,
+  csvRowLine,
+  decodeCursor,
+  Submission,
+  SubmissionRepository,
+} from '../shared/submissions';
 
 // create AWS SDK clients (module scope, exported for mocking in tests)
 export const dynamoClient = new DynamoDBClient();
@@ -40,6 +48,7 @@ function serveStatic(name: string, contentType: string): APIGatewayProxyResultV2
     headers: {
       'Content-Type': contentType,
       'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
     },
     body: readUiFile(name),
   };
@@ -110,6 +119,14 @@ function getRepository(): FormConfigRepository {
   return new FormConfigRepository(documentClient, tableName);
 }
 
+function getSubmissionRepository(): SubmissionRepository {
+  const tableName = process.env.FORM_SUBMISSIONS_TABLE_NAME;
+  if (!tableName) {
+    throw new Error('FORM_SUBMISSIONS_TABLE_NAME is not set');
+  }
+  return new SubmissionRepository(documentClient, tableName);
+}
+
 async function listForms(): Promise<APIGatewayProxyResultV2> {
   const forms = await getRepository().list();
   return json(200, { forms });
@@ -146,6 +163,205 @@ async function deleteForm(formId: string): Promise<APIGatewayProxyResultV2> {
   return { statusCode: 204 };
 }
 
+const DEFAULT_SUBMISSIONS_LIMIT = 50;
+const MIN_SUBMISSIONS_LIMIT = 1;
+const MAX_SUBMISSIONS_LIMIT = 200;
+const EXPORT_MAX_ROWS = 10000;
+const EXPORT_MAX_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Builds `header` + as many `rowText(row, index)` pieces as fit + `footer`,
+ * stopping before the first row that would push the running byte total over
+ * `EXPORT_MAX_BYTES`. 10,000 rows of submitted text can be far larger than a
+ * Lambda response is allowed to be, and an oversized response fails as a 500
+ * with no partial data, so an export that would exceed the cap comes back
+ * short instead. Rows are appended one at a time from a running byte count,
+ * so this never holds more than the accumulated parts plus one candidate row
+ * in memory (no full serialize-then-measure pass over all rows).
+ */
+function buildWithinByteCap(
+  rows: Submission[],
+  header: string,
+  footer: string,
+  rowText: (row: Submission, index: number) => string
+): { body: string; capped: boolean } {
+  const parts: string[] = [header];
+  let bytes = Buffer.byteLength(header, 'utf8') + Buffer.byteLength(footer, 'utf8');
+  let capped = false;
+
+  for (let i = 0; i < rows.length; i++) {
+    const piece = rowText(rows[i], i);
+    const pieceBytes = Buffer.byteLength(piece, 'utf8');
+    if (bytes + pieceBytes > EXPORT_MAX_BYTES) {
+      capped = true;
+      break;
+    }
+    parts.push(piece);
+    bytes += pieceBytes;
+  }
+
+  parts.push(footer);
+  return { body: parts.join(''), capped };
+}
+
+/** CSV export body: header line first, then a CRLF-terminated line per row. */
+function serializeCsvWithinByteCap(rows: Submission[]): { body: string; capped: boolean } {
+  const columns = csvColumns(rows);
+  return buildWithinByteCap(
+    rows,
+    csvHeaderLine(columns) + '\r\n',
+    '',
+    (row) => csvRowLine(row, columns) + '\r\n'
+  );
+}
+
+/** JSON export body: `{"submissions":[` + comma-joined rows + `]}`. */
+function serializeJsonWithinByteCap(rows: Submission[]): { body: string; capped: boolean } {
+  return buildWithinByteCap(
+    rows,
+    '{"submissions":[',
+    ']}',
+    (row, index) => (index > 0 ? ',' : '') + JSON.stringify(row)
+  );
+}
+
+type QueryStringParams = Record<string, string | undefined> | undefined;
+interface ValidationError {
+  message: string;
+}
+interface DateBounds {
+  from?: string;
+  to?: string;
+}
+
+const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_DATE_PREFIX_PATTERN = /^\d{4}-\d{2}-\d{2}/;
+
+function isValidationError(value: unknown): value is ValidationError {
+  return typeof value === 'object' && value !== null && 'message' in value;
+}
+
+/** `limit` defaults to 50 and must be an integer in `1..200`. */
+function parseSubmissionsLimit(qs: QueryStringParams): number | ValidationError {
+  const raw = qs?.limit;
+  if (raw === undefined) {
+    return DEFAULT_SUBMISSIONS_LIMIT;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < MIN_SUBMISSIONS_LIMIT || value > MAX_SUBMISSIONS_LIMIT) {
+    return { message: 'limit must be between 1 and 200' };
+  }
+  return value;
+}
+
+/**
+ * Validates `from`/`to` as ISO 8601 date or date-time strings and normalizes
+ * them to UTC. The bounds are compared against stored `timestamp` values, which
+ * are UTC ISO 8601 strings, so a bound has to be in the same form to compare
+ * correctly: `2026-01-01T00:00:00+05:00` sorts after `2026-01-01T00:00:00.000Z`
+ * as a string but is earlier in time. Input `Date.parse` accepts but that is
+ * not ISO-shaped (`January 1, 2026`) is rejected rather than normalized, since
+ * `Date.parse` handles those formats inconsistently across engines. A date-only
+ * `to` (YYYY-MM-DD) is treated as inclusive of that day, ending at 23:59:59.999
+ * UTC.
+ */
+function parseDateBounds(qs: QueryStringParams): DateBounds | ValidationError {
+  const { from, to } = qs ?? {};
+  const isValid = (value: string | undefined) =>
+    value === undefined || (ISO_DATE_PREFIX_PATTERN.test(value) && !Number.isNaN(Date.parse(value)));
+  if (!isValid(from) || !isValid(to)) {
+    return { message: 'from and to must be ISO 8601 dates' };
+  }
+
+  const toEndOfDay = to !== undefined && DATE_ONLY_PATTERN.test(to) ? `${to}T23:59:59.999Z` : to;
+  return {
+    from: from === undefined ? undefined : new Date(from).toISOString(),
+    to: toEndOfDay === undefined ? undefined : new Date(toEndOfDay).toISOString(),
+  };
+}
+
+async function listSubmissions(formId: string, qs: QueryStringParams): Promise<APIGatewayProxyResultV2> {
+  const limit = parseSubmissionsLimit(qs);
+  if (isValidationError(limit)) {
+    return json(400, limit);
+  }
+
+  const dateBounds = parseDateBounds(qs);
+  if (isValidationError(dateBounds)) {
+    return json(400, dateBounds);
+  }
+
+  const cursor = qs?.cursor;
+  if (cursor !== undefined) {
+    try {
+      decodeCursor(cursor);
+    } catch (err) {
+      console.warn('Invalid submissions pagination cursor', err);
+      return json(400, { message: 'Invalid cursor' });
+    }
+  }
+
+  const form = await getRepository().get(formId);
+  if (!form) {
+    return json(404, { message: 'Form not found' });
+  }
+
+  const result = await getSubmissionRepository().query({
+    formId,
+    from: dateBounds.from,
+    to: dateBounds.to,
+    q: qs?.q,
+    limit,
+    cursor,
+  });
+  return json(200, result);
+}
+
+async function exportSubmissions(formId: string, qs: QueryStringParams): Promise<APIGatewayProxyResultV2> {
+  const format = qs?.format ?? 'csv';
+  if (format !== 'csv' && format !== 'json') {
+    return json(400, { message: 'format must be csv or json' });
+  }
+
+  const dateBounds = parseDateBounds(qs);
+  if (isValidationError(dateBounds)) {
+    return json(400, dateBounds);
+  }
+
+  const form = await getRepository().get(formId);
+  if (!form) {
+    return json(404, { message: 'Form not found' });
+  }
+
+  const { submissions, truncated } = await getSubmissionRepository().queryAll({
+    formId,
+    from: dateBounds.from,
+    to: dateBounds.to,
+    q: qs?.q,
+    maxRows: EXPORT_MAX_ROWS,
+  });
+
+  const serialized =
+    format === 'json' ? serializeJsonWithinByteCap(submissions) : serializeCsvWithinByteCap(submissions);
+
+  const truncatedHeader: Record<string, string> =
+    truncated || serialized.capped ? { 'X-Truncated': 'true' } : {};
+
+  return {
+    statusCode: 200,
+    headers: {
+      'Content-Type': format === 'json' ? 'application/json' : 'text/csv; charset=utf-8',
+      // The route checked `formId` against FORM_ID_PATTERN, so the filename
+      // cannot carry a quote or a newline out of the header.
+      'Content-Disposition': `attachment; filename="${formId}-submissions.${format}"`,
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      ...truncatedHeader,
+    },
+    body: serialized.body,
+  };
+}
+
 /** API Gateway base64-encodes the body (e.g. for some client/proxy combinations); decode it before parsing. */
 function getRequestBody(event: APIGatewayProxyEventV2): string | undefined {
   if (event.body === undefined) {
@@ -155,6 +371,30 @@ function getRequestBody(event: APIGatewayProxyEventV2): string | undefined {
 }
 
 const FORM_ITEM_PATH = /^\/api\/forms\/([^/]+)$/;
+const FORM_SUBMISSIONS_PATH = /^\/api\/forms\/([^/]+)\/submissions$/;
+const FORM_SUBMISSIONS_EXPORT_PATH = /^\/api\/forms\/([^/]+)\/submissions\/export$/;
+
+/** Percent-decodes a form ID path segment, returning `undefined` on malformed input. */
+function decodeFormId(raw: string): string | undefined {
+  try {
+    return decodeURIComponent(raw);
+  } catch (err) {
+    console.warn('Invalid percent-encoding in form ID path segment', err);
+    return undefined;
+  }
+}
+
+/**
+ * Decodes a form ID and rejects anything that could not be a stored form ID.
+ * The submissions routes put the form ID in the `Content-Disposition` filename,
+ * so it has to be constrained by the route rather than by whatever a form
+ * record happens to hold: a quote or a newline in the value would otherwise
+ * escape the header.
+ */
+function decodeValidFormId(raw: string): string | undefined {
+  const formId = decodeFormId(raw);
+  return formId !== undefined && FORM_ID_PATTERN.test(formId) ? formId : undefined;
+}
 
 /**
  * API Gateway populates `requestContext.authorizer.jwt` only when a JWT authorizer
@@ -198,13 +438,32 @@ async function route(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResu
     return method === 'GET' ? listForms() : json(405, { message: 'Method not allowed' });
   }
 
+  const exportMatch = FORM_SUBMISSIONS_EXPORT_PATH.exec(rawPath);
+  if (exportMatch) {
+    const formId = decodeValidFormId(exportMatch[1]);
+    if (formId === undefined) {
+      return json(404, { message: 'Form not found' });
+    }
+    return method === 'GET'
+      ? exportSubmissions(formId, event.queryStringParameters)
+      : json(405, { message: 'Method not allowed' });
+  }
+
+  const submissionsMatch = FORM_SUBMISSIONS_PATH.exec(rawPath);
+  if (submissionsMatch) {
+    const formId = decodeValidFormId(submissionsMatch[1]);
+    if (formId === undefined) {
+      return json(404, { message: 'Form not found' });
+    }
+    return method === 'GET'
+      ? listSubmissions(formId, event.queryStringParameters)
+      : json(405, { message: 'Method not allowed' });
+  }
+
   const formMatch = FORM_ITEM_PATH.exec(rawPath);
   if (formMatch) {
-    let formId: string;
-    try {
-      formId = decodeURIComponent(formMatch[1]);
-    } catch (err) {
-      console.warn('Invalid percent-encoding in form ID path segment', err);
+    const formId = decodeFormId(formMatch[1]);
+    if (formId === undefined) {
       return json(404, { message: 'Form not found' });
     }
     switch (method) {

@@ -89,10 +89,38 @@ The form handler works in one of two modes, decided by whether the forms table h
   * a form with `oneSubmissionPerIp` on that already has a submission from the same source IP address gets `429 Only one submission per IP address is allowed for this form`;
   * otherwise the submission is stored, and a notification email is sent only if `emailNotificationsEnabled` is on.
 
-## Future Features
+### Submission reports
 
-I plan to add a web reporting engine to allow you to view, search, and export form submission data.
+The **Submissions** action on a row of the forms table opens that form's submissions, newest first.
 
+* **Date range.** The From and To dates filter on the submission timestamp. Either bound can be left empty. Dates are interpreted in UTC, and the To date includes the whole day you pick, ending at 23:59:59.999 UTC.
+* **Search.** The search box matches a case-insensitive substring against every text value in a submission, including the submitted fields, so you do not have to know which field holds the text.
+* **Load more.** A page of 50 submissions loads at a time. **Load more** appears while there are more to fetch and appends the next page to the table.
+* **Columns.** The table shows `timestamp` and `sourceIP`, then the submitted fields found in the loaded rows sorted by field name, then `id`, `forwardedFor`, and `formId`. Different submissions to one form can carry different fields, so the columns are recalculated as more rows load. The export uses a different order: `id`, `timestamp`, `sourceIP`, `forwardedFor`, `formId`, then the remaining fields sorted by field name.
+* **Export.** **Export CSV** and **Export JSON** download every submission matching the current date range and search, not only the rows on screen. An export is capped at 10,000 rows and 5 MB, whichever comes first; past either cap the file holds the newest matches that fit and the rest are omitted. Narrow the date range to get the remainder.
+* **CSV and spreadsheet formulas.** In the CSV export, a cell whose value starts with `=`, `+`, `-`, `@`, a tab, or a carriage return is prefixed with a single quote (`'`) so the spreadsheet shows it as text instead of executing it as a formula.
+
+Reports are per form and read the submissions table by `formId`. Submissions received before any form configuration existed (legacy mode, described above) have no `formId`, so they do not appear in any form's report or export.
+
+### Admin API
+
+The admin page's JSON API is also available for scripting. Every `/api` request needs an `Authorization: Bearer <ID token>` header carrying a Cognito ID token for the admin user pool, obtained the way the page does: call Cognito `InitiateAuth` with `AuthFlow: USER_PASSWORD_AUTH` against the app client (`AdminUserPoolClientId`). A request with no valid token is rejected by the API with `401 Unauthorized` before it reaches DynamoDB. The base URL is the `AdminUrl` output. All responses are JSON with `Cache-Control: no-store` unless noted otherwise below.
+
+* `GET /api/forms`: returns `{ forms: [...] }`, sorted by `formId`.
+* `GET /api/forms/{formId}`: returns the form record, or `404 { message: "Form not found" }`.
+* `PUT /api/forms/{formId}`: creates or replaces the form. Body fields are `formName`, `notificationEmail`, `emailNotificationsEnabled`, `oneSubmissionPerIp`, `enabled` (see [Form configuration](#form-configuration) for the rules on each). `formId` in the body is optional, but if present it must match the path or the request is rejected. Invalid input returns `400 { message: "Validation failed", errors: [...] }` with one string per problem; invalid JSON in the body returns `400 { message: "Invalid JSON in request body" }`. On success it returns `200` with the saved record, including `createdAt` and `updatedAt`.
+* `DELETE /api/forms/{formId}`: deletes the form and returns `204` with no body. Deleting a form that does not exist also returns `204`.
+* `GET /api/forms/{formId}/submissions`: lists submissions for one form, newest first. Query parameters: `from` and `to` (ISO 8601 dates, same rules as the report's date range), `q` (case-insensitive substring search), `limit` (default 50, must be an integer from 1 to 200), and `cursor` (an opaque token from a previous response's `nextCursor`, used to fetch the next page). Returns `{ submissions: [...], nextCursor?: string }`. Each call reads DynamoDB for up to 50 pages or 20 seconds, whichever comes first; when a search term makes a page scan without finding a match, the call can return an empty `submissions` array together with a `nextCursor`, meaning the scan is still in progress and the caller should ask again with that cursor.
+* `GET /api/forms/{formId}/submissions/export`: returns every submission matching the date range and search as a file download. Query parameters: `from`, `to`, `q` (as above), and `format` (`csv`, the default, or `json`). The response carries `Content-Disposition: attachment; filename="{formId}-submissions.{format}"`. The same 10,000-row/5 MB export cap and per-call scan budget described in [Submission reports](#submission-reports) apply here; when either cap cuts the export short, the response carries an `X-Truncated: true` header.
+* Error responses across these routes: `400 { message: "limit must be between 1 and 200" }`, `400 { message: "from and to must be ISO 8601 dates" }`, `400 { message: "Invalid cursor" }`, `400 { message: "format must be csv or json" }`, `404 { message: "Form not found" }` for an unknown or malformed form ID, `405 { message: "Method not allowed" }` for an unsupported method on a known route, and `500 { message: "Internal error" }` for anything unhandled.
+
+```bash
+curl -H "Authorization: Bearer $ID_TOKEN" "$ADMIN_URL/api/forms"
+
+curl -H "Authorization: Bearer $ID_TOKEN" \
+  "$ADMIN_URL/api/forms/contact-us/submissions/export?format=csv&from=2026-01-01&to=2026-01-31" \
+  -o contact-us-submissions.csv
+```
 
 ## Testing the Application
 
@@ -105,6 +133,8 @@ The HTML file contains a simple form. When the form is submitted, it triggers a 
 To test the application locally:
 
 1. Open `client-side/js/formHandler.js` and replace `API_ENDPOINT` at the top of the file with the URL output from your CDK deployment. This is the endpoint for the API Gateway that was deployed by the CDK.
+
+    The sample form in `client-side/index.html` sends a hidden `formId` field with the value `contact`. With no form configurations stored, the handler is in legacy mode and does not validate it, so the sample works out of the box. Once you create your first form in the admin interface, per-form configuration takes over: to keep using the sample form as-is, create a form with ID `contact`; otherwise change the hidden field's value to match a form ID you did create.
 
 2. Since browsers enforce strict security measures around opening local files, you'll need to serve the HTML file using a local HTTP server. Python's built-in HTTP server is one easy way to do this.
 
