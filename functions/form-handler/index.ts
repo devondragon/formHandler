@@ -2,7 +2,7 @@ import { DynamoDBClient, DescribeTableCommand } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { SESClient, SendEmailCommand, SendEmailCommandInput } from '@aws-sdk/client-ses';
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'node:crypto';
 
 // create AWS SDK clients
 export const dynamoClient = process.env.AWS_SAM_LOCAL
@@ -140,7 +140,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     // add unique id, source IP and timestamp
-    data.id = uuidv4();
+    data.id = randomUUID();
     data.forwardedFor = event.headers['X-Forwarded-For'] || event.headers['x-forwarded-for'];
     data.sourceIP = event.requestContext.http.sourceIp;
     data.timestamp = new Date().toISOString();
