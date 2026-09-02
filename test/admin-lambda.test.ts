@@ -731,6 +731,35 @@ describe('GET /api/forms/{formId}/submissions/export', () => {
       expect(parsed.submissions.length).toBeGreaterThan(0);
       expect(parsed.submissions.length).toBeLessThan(8);
     });
+
+    test('CSV: the column set stays the union across all rows even when later rows are cut by the cap', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: existingForm });
+      // Only the last row (the one guaranteed to be dropped by the cap) carries
+      // this extra attribute. The header is computed from the full row set
+      // before any row is cut, so it still has to appear as a column.
+      const blob = 'a'.repeat(1024 * 1024);
+      const items = Array.from({ length: 8 }, (_, i) =>
+        submissionItem(
+          String(i),
+          '2026-01-02T00:00:00.000Z',
+          i === 7 ? { blob, onlyInLastRow: 'z' } : { blob }
+        )
+      );
+      ddbMock.on(QueryCommand).resolves({ Items: items });
+
+      const result = (await adminModule.handler(
+        makeEvent('GET', '/api/forms/contact-us/submissions/export')
+      )) as APIGatewayProxyStructuredResultV2;
+
+      expect(result.statusCode).toBe(200);
+      expect(result.headers?.['X-Truncated']).toBe('true');
+      const body = result.body as string;
+      const [header] = body.split('\r\n');
+      expect(header.split(',')).toContain('onlyInLastRow');
+      const rows = body.split('\r\n').slice(1, -1);
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.length).toBeLessThan(8);
+    });
   });
 
   test('an unsupported format returns 400', async () => {

@@ -93,13 +93,12 @@ function csvCell(value: unknown): string {
 }
 
 /**
- * Serializes rows to RFC 4180 CSV. Columns are the five fixed submission
- * fields, then every other attribute name found across the rows sorted by
- * field name. Missing attributes become empty cells; non-string values are
- * JSON-stringified; cells that would read as a spreadsheet formula are
- * prefixed with `'`; rows end with CRLF.
+ * The CSV column list: the five fixed submission fields, then every other
+ * attribute name found across `rows` sorted by field name. Computed once from
+ * the full row set so a caller that later drops rows (e.g. to stay under a
+ * byte cap) still gets the column each row would have had if included.
  */
-export function toCsv(rows: Submission[]): string {
+export function csvColumns(rows: Submission[]): string[] {
   const otherColumns = new Set<string>();
   for (const row of rows) {
     for (const key of Object.keys(row)) {
@@ -108,19 +107,43 @@ export function toCsv(rows: Submission[]): string {
       }
     }
   }
-  const columns = [...FIXED_CSV_COLUMNS, ...[...otherColumns].sort()];
+  return [...FIXED_CSV_COLUMNS, ...[...otherColumns].sort()];
+}
 
-  const lines = [columns.map(csvCell).join(',')];
-  for (const row of rows) {
-    const cells = columns.map((column) => {
+/** Serializes the CSV header line (no trailing CRLF) for `columns`. */
+export function csvHeaderLine(columns: string[]): string {
+  return columns.map(csvCell).join(',');
+}
+
+/**
+ * Serializes one data row (no trailing CRLF) against `columns`. Missing
+ * attributes become empty cells; non-string values are JSON-stringified;
+ * cells that would read as a spreadsheet formula are prefixed with `'`.
+ */
+export function csvRowLine(row: Submission, columns: string[]): string {
+  return columns
+    .map((column) => {
       if (!(column in row) || row[column] === undefined) {
         return '';
       }
       return csvCell(row[column]);
-    });
-    lines.push(cells.join(','));
-  }
+    })
+    .join(',');
+}
 
+/**
+ * Serializes rows to RFC 4180 CSV. Columns are the five fixed submission
+ * fields, then every other attribute name found across the rows sorted by
+ * field name. Missing attributes become empty cells; non-string values are
+ * JSON-stringified; cells that would read as a spreadsheet formula are
+ * prefixed with `'`; rows end with CRLF.
+ */
+export function toCsv(rows: Submission[]): string {
+  const columns = csvColumns(rows);
+  const lines = [csvHeaderLine(columns)];
+  for (const row of rows) {
+    lines.push(csvRowLine(row, columns));
+  }
   return lines.join('\r\n') + '\r\n';
 }
 

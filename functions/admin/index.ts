@@ -4,7 +4,14 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { FORM_ID_PATTERN, FormConfigRepository, validateFormConfig } from '../shared/form-config';
-import { decodeCursor, Submission, SubmissionRepository, toCsv } from '../shared/submissions';
+import {
+  csvColumns,
+  csvHeaderLine,
+  csvRowLine,
+  decodeCursor,
+  Submission,
+  SubmissionRepository,
+} from '../shared/submissions';
 
 // create AWS SDK clients (module scope, exported for mocking in tests)
 export const dynamoClient = new DynamoDBClient();
@@ -163,37 +170,59 @@ const EXPORT_MAX_ROWS = 10000;
 const EXPORT_MAX_BYTES = 5 * 1024 * 1024;
 
 /**
- * Serializes the longest prefix of `rows` whose body fits in
+ * Builds `header` + as many `rowText(row, index)` pieces as fit + `footer`,
+ * stopping before the first row that would push the running byte total over
  * `EXPORT_MAX_BYTES`. 10,000 rows of submitted text can be far larger than a
  * Lambda response is allowed to be, and an oversized response fails as a 500
  * with no partial data, so an export that would exceed the cap comes back
- * short instead. Both serializers grow monotonically with the row count, so a
- * binary search over the prefix length finds the cut in a handful of passes.
+ * short instead. Rows are appended one at a time from a running byte count,
+ * so this never holds more than the accumulated parts plus one candidate row
+ * in memory (no full serialize-then-measure pass over all rows).
  */
-function serializeWithinByteCap(
+function buildWithinByteCap(
   rows: Submission[],
-  serialize: (rows: Submission[]) => string
+  header: string,
+  footer: string,
+  rowText: (row: Submission, index: number) => string
 ): { body: string; capped: boolean } {
-  const full = serialize(rows);
-  if (Buffer.byteLength(full, 'utf8') <= EXPORT_MAX_BYTES) {
-    return { body: full, capped: false };
+  const parts: string[] = [header];
+  let bytes = Buffer.byteLength(header, 'utf8') + Buffer.byteLength(footer, 'utf8');
+  let capped = false;
+
+  for (let i = 0; i < rows.length; i++) {
+    const piece = rowText(rows[i], i);
+    const pieceBytes = Buffer.byteLength(piece, 'utf8');
+    if (bytes + pieceBytes > EXPORT_MAX_BYTES) {
+      capped = true;
+      break;
+    }
+    parts.push(piece);
+    bytes += pieceBytes;
   }
 
-  // `low` is the largest row count known to fit, `high` the smallest known not to.
-  let low = 0;
-  let high = rows.length;
-  let body = serialize([]);
-  while (high - low > 1) {
-    const mid = Math.floor((low + high) / 2);
-    const candidate = serialize(rows.slice(0, mid));
-    if (Buffer.byteLength(candidate, 'utf8') <= EXPORT_MAX_BYTES) {
-      low = mid;
-      body = candidate;
-    } else {
-      high = mid;
-    }
-  }
-  return { body, capped: true };
+  parts.push(footer);
+  return { body: parts.join(''), capped };
+}
+
+/** CSV export body: header line first, then a CRLF-terminated line per row. */
+function serializeCsvWithinByteCap(rows: Submission[]): { body: string; capped: boolean } {
+  const columns = csvColumns(rows);
+  return buildWithinByteCap(
+    rows,
+    csvHeaderLine(columns) + '\r\n',
+    '',
+    (row) => csvRowLine(row, columns) + '\r\n'
+  );
+}
+
+/** JSON export body: `{"submissions":[` + comma-joined rows + `]}`. */
+function serializeJsonWithinByteCap(rows: Submission[]): { body: string; capped: boolean } {
+  return buildWithinByteCap(
+    rows,
+    '{"submissions":[',
+    ']}',
+    (row, index) => (index > 0 ? ',' : '') + JSON.stringify(row)
+  );
 }
 
 type QueryStringParams = Record<string, string | undefined> | undefined;
@@ -313,9 +342,7 @@ async function exportSubmissions(formId: string, qs: QueryStringParams): Promise
   });
 
   const serialized =
-    format === 'json'
-      ? serializeWithinByteCap(submissions, (rows) => JSON.stringify({ submissions: rows }))
-      : serializeWithinByteCap(submissions, toCsv);
+    format === 'json' ? serializeJsonWithinByteCap(submissions) : serializeCsvWithinByteCap(submissions);
 
   const truncatedHeader: Record<string, string> =
     truncated || serialized.capped ? { 'X-Truncated': 'true' } : {};
