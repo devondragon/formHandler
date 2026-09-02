@@ -56,14 +56,22 @@ export function encodeCursor(key: SubmissionCursorKey): string {
   return Buffer.from(JSON.stringify(key), 'utf8').toString('base64url');
 }
 
-/** Decodes a pagination cursor produced by `encodeCursor`. Throws on malformed input. */
+/**
+ * Decodes a pagination cursor produced by `encodeCursor`. Throws on
+ * malformed input: invalid base64url/JSON, a non-object payload, or a
+ * payload missing a string `id`, `timestamp`, or `formId`.
+ */
 export function decodeCursor(cursor: string): SubmissionCursorKey {
   const json = Buffer.from(cursor, 'base64url').toString('utf8');
   const parsed = JSON.parse(json);
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new Error('Invalid cursor');
   }
-  return parsed as SubmissionCursorKey;
+  const { id, timestamp, formId } = parsed as Record<string, unknown>;
+  if (typeof id !== 'string' || typeof timestamp !== 'string' || typeof formId !== 'string') {
+    throw new Error('Invalid cursor');
+  }
+  return { id, timestamp, formId };
 }
 
 function csvCell(value: unknown): string {
@@ -91,7 +99,7 @@ export function toCsv(rows: Submission[]): string {
   }
   const columns = [...FIXED_CSV_COLUMNS, ...[...otherColumns].sort()];
 
-  const lines = [columns.join(',')];
+  const lines = [columns.map(csvCell).join(',')];
   for (const row of rows) {
     const cells = columns.map((column) => {
       if (!(column in row) || row[column] === undefined) {

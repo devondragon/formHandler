@@ -44,6 +44,27 @@ describe('encodeCursor / decodeCursor', () => {
     const notJson = Buffer.from('not json').toString('base64url');
     expect(() => decodeCursor(notJson)).toThrow();
   });
+
+  test('decodeCursor throws on an empty object', () => {
+    const cursor = Buffer.from(JSON.stringify({}), 'utf8').toString('base64url');
+    expect(() => decodeCursor(cursor)).toThrow();
+  });
+
+  test('decodeCursor throws when formId is missing', () => {
+    const cursor = Buffer.from(
+      JSON.stringify({ id: 'abc', timestamp: '2026-01-01T00:00:00.000Z' }),
+      'utf8'
+    ).toString('base64url');
+    expect(() => decodeCursor(cursor)).toThrow();
+  });
+
+  test('decodeCursor throws when timestamp is not a string', () => {
+    const cursor = Buffer.from(
+      JSON.stringify({ id: 'abc', timestamp: 12345, formId: 'contact-us' }),
+      'utf8'
+    ).toString('base64url');
+    expect(() => decodeCursor(cursor)).toThrow();
+  });
 });
 
 describe('toCsv', () => {
@@ -126,6 +147,22 @@ describe('toCsv', () => {
     const csv = toCsv(rows);
     expect(csv.endsWith('\r\n')).toBe(true);
     expect(csv.split('\r\n')).toHaveLength(3); // header, row, trailing empty
+  });
+
+  test('quotes a header cell whose attribute name contains a comma', () => {
+    const rows = [
+      {
+        id: '1',
+        timestamp: 't',
+        sourceIP: 's',
+        forwardedFor: 'f',
+        formId: 'a',
+        'first, last': 'Jane Doe',
+      },
+    ];
+    const csv = toCsv(rows);
+    const [header] = csv.split('\r\n');
+    expect(header).toBe('id,timestamp,sourceIP,forwardedFor,formId,"first, last"');
   });
 });
 
@@ -332,6 +369,17 @@ describe('SubmissionRepository', () => {
 
       expect(result.submissions.map((s: any) => s.id)).toEqual(['1', '2']);
       expect(result.truncated).toBe(true);
+    });
+
+    test('truncated is false when the cap is hit exactly on the last item of the final page', async () => {
+      ddbMock.on(QueryCommand).resolves({
+        Items: [item('1', '2026-01-02T00:00:00.000Z'), item('2', '2026-01-01T00:00:00.000Z')],
+      });
+
+      const result = await repository.queryAll({ formId: 'contact-us', maxRows: 2 });
+
+      expect(result.submissions.map((s: any) => s.id)).toEqual(['1', '2']);
+      expect(result.truncated).toBe(false);
     });
 
     test('sets truncated true when the cap is hit exactly at a page boundary but more pages remain', async () => {
