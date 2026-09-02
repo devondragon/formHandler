@@ -334,6 +334,7 @@ describe('routing errors', () => {
 
   test('DynamoDB rejection returns 500', async () => {
     ddbMock.on(ScanCommand).rejects(new Error('boom'));
+    const consoleErrorSpy = jest.spyOn(console, 'error');
 
     const result = (await adminModule.handler(
       makeEvent('GET', '/api/forms')
@@ -342,5 +343,6 @@ describe('routing errors', () => {
     expect(result.statusCode).toBe(500);
     expect(result.headers?.['Content-Type']).toBe('application/json');
     expect(JSON.parse(result.body as string)).toEqual({ message: 'Internal error' });
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
   });
 });

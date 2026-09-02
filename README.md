@@ -28,6 +28,8 @@ Before getting started, copy the `example.env` file to a `.env` file and replace
 
 With no form configurations stored, the handler accepts any data sent to it and sends alerts to the `EMAIL_TO` address, as it always has. Once you create your first form in the admin interface, per-form configuration takes over. See [Admin](#admin) below.
 
+Setting `NODE_ENV=production` at synth time (`NODE_ENV=production cdk deploy`) switches the removal policy of the DynamoDB tables and the Cognito user pool to `RETAIN`, so a stack deletion leaves your form configurations, submissions, and administrator accounts in place. Without it, those resources are destroyed along with the stack.
+
 ## Security Note
 
 Though this is a functional system, it comes with potential security vulnerabilities. This includes the possibility of receiving an influx of fake form submissions from bots or malicious attackers which could lead to increased AWS costs. Also, as it currently stands, the system has minimal protection against XSS and other injection attacks. It is recommended to integrate security measures that suit your requirements.
@@ -48,6 +50,18 @@ Authentication is an Amazon Cognito user pool. Self sign-up is disabled, so the 
 
 To add more administrators, create additional users in the Cognito user pool (its ID is the `AdminUserPoolId` output). The pool's app client ID is the `AdminUserPoolClientId` output.
 
+The temporary password Cognito emails expires after 7 days. If it expires before first login, recover the account with the AWS CLI:
+
+```bash
+# Set a specific permanent password
+aws cognito-idp admin-set-user-password --user-pool-id <AdminUserPoolId> --username <email> --password <new-password> --permanent
+
+# Or have Cognito re-send a new temporary password
+aws cognito-idp admin-create-user --user-pool-id <AdminUserPoolId> --username <email> --message-action RESEND
+```
+
+Changing `ADMIN_EMAIL` and redeploying replaces the seeded administrator: the CDK-managed Cognito user for the previous address is deleted, and a new one is created for the new address. It does not affect any other administrators you created by hand.
+
 ### Form configuration
 
 Each form is a record in the forms table with these fields:
@@ -65,7 +79,7 @@ Each form is a record in the forms table with these fields:
 
 The form handler works in one of two modes, decided by whether the forms table holds any configuration at all. The check is cached for 60 seconds, so a newly created first form takes up to a minute to take effect.
 
-* **No form configurations exist (legacy mode).** Behavior is unchanged from earlier versions: any submission is accepted and stored, and an email goes to `EMAIL_TO`.
+* **No form configurations exist (legacy mode).** Behavior is unchanged from earlier versions: any submission is accepted and stored, whether or not it includes a `formId`, and an email goes to `EMAIL_TO`.
 * **At least one form configuration exists.** Submissions are matched to their configuration:
   * a submission with no `formId` gets `400 Form ID is missing`;
   * a `formId` with no matching configuration gets `404 Unknown form`;

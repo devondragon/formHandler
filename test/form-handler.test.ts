@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import * as cdk from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { FormHandlerStack } from '../lib/form-handler-stack';
@@ -128,6 +130,20 @@ describe('FormHandlerStack', () => {
     });
   });
 
+  test('the admin user pool client has OAuth disabled (no hosted-UI flows or callback)', () => {
+    const template = buildTemplate();
+
+    template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
+      AllowedOAuthFlowsUserPoolClient: Match.anyValue(),
+    });
+    const clients = template.findResources('AWS::Cognito::UserPoolClient');
+    for (const client of Object.values(clients)) {
+      const props = (client as { Properties?: Record<string, unknown> }).Properties ?? {};
+      expect(props.AllowedOAuthFlows).toBeUndefined();
+      expect(props.AllowedOAuthFlowsUserPoolClient).toBe(false);
+    }
+  });
+
   test('creates the initial admin user from ADMIN_EMAIL', () => {
     const template = buildTemplate();
 
@@ -172,6 +188,26 @@ describe('FormHandlerStack', () => {
     template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
       Name: 'form-handler-admin',
     });
+  });
+
+  test('bundles the admin UI files into the admin Lambda asset', () => {
+    const app = new cdk.App();
+    new FormHandlerStack(app, 'MyTestStack');
+    const assembly = app.synth();
+    const outdir = assembly.directory;
+
+    // esbuild bundling copies functions/admin/ui/* to <outputDir>/ui via
+    // afterBundling; the asset directory itself is named asset.<hash> in the
+    // synthesized cloud assembly, so scan for it rather than assuming a name.
+    const assetDirs = fs
+      .readdirSync(outdir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith('asset.'));
+
+    const matches = assetDirs.filter((entry) =>
+      fs.existsSync(path.join(outdir, entry.name, 'ui', 'index.html'))
+    );
+
+    expect(matches).toHaveLength(1);
   });
 
   test('outputs the admin URL and Cognito identifiers', () => {

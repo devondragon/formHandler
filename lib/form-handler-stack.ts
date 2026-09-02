@@ -232,6 +232,10 @@ export class FormHandlerStack extends Stack {
       authFlows: {
         userPassword: true,
       },
+      // The admin page authenticates with USER_PASSWORD_AUTH via a direct REST call,
+      // not a hosted-UI redirect, so the OAuth flows CDK enables by default (with a
+      // placeholder https://example.com callback) are pure attack surface here.
+      disableOAuth: true,
     });
 
     // Seed the first administrator. Cognito emails a temporary password; the
