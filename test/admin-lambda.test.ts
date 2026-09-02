@@ -215,6 +215,7 @@ describe('static UI serving', () => {
     expect(result.statusCode).toBe(200);
     expect(result.headers?.['Content-Type']).toBe('application/javascript; charset=utf-8');
     expect(result.headers?.['Cache-Control']).toBe('no-store');
+    expect(result.headers?.['X-Content-Type-Options']).toBe('nosniff');
   });
 
   test('GET /admin.css returns 200 with text/css content type', async () => {
@@ -225,6 +226,7 @@ describe('static UI serving', () => {
     expect(result.statusCode).toBe(200);
     expect(result.headers?.['Content-Type']).toBe('text/css; charset=utf-8');
     expect(result.headers?.['Cache-Control']).toBe('no-store');
+    expect(result.headers?.['X-Content-Type-Options']).toBe('nosniff');
   });
 });
 
@@ -555,6 +557,72 @@ describe('GET /api/forms/{formId}/submissions/export', () => {
     expect(result.headers?.['X-Truncated']).toBe('true');
     const parsedRows = (result.body as string).split('\r\n').slice(1, -1);
     expect(parsedRows).toHaveLength(10000);
+  });
+
+  test.each([
+    ['csv', 'text/csv; charset=utf-8'],
+    ['json', 'application/json'],
+  ])('the %s export is uncacheable and not sniffable', async (format, contentType) => {
+    ddbMock.on(GetCommand).resolves({ Item: existingForm });
+    ddbMock.on(QueryCommand).resolves({ Items: [submissionItem('1', '2026-01-02T00:00:00.000Z')] });
+
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/contact-us/submissions/export', undefined, false, true, {
+        format,
+      })
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.headers?.['Content-Type']).toBe(contentType);
+    expect(result.headers?.['Cache-Control']).toBe('no-store');
+    expect(result.headers?.['X-Content-Type-Options']).toBe('nosniff');
+  });
+
+  describe('the 5 MB byte cap', () => {
+    const EXPORT_MAX_BYTES = 5 * 1024 * 1024;
+
+    /** Eight rows of roughly 1 MiB each: the byte cap trips well before 10,000 rows. */
+    function oversizedItems() {
+      const blob = 'a'.repeat(1024 * 1024);
+      return Array.from({ length: 8 }, (_, i) =>
+        submissionItem(String(i), '2026-01-02T00:00:00.000Z', { blob })
+      );
+    }
+
+    test('CSV: drops rows past the cap, sets X-Truncated, and stays under the cap', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: existingForm });
+      ddbMock.on(QueryCommand).resolves({ Items: oversizedItems() });
+
+      const result = (await adminModule.handler(
+        makeEvent('GET', '/api/forms/contact-us/submissions/export')
+      )) as APIGatewayProxyStructuredResultV2;
+
+      expect(result.statusCode).toBe(200);
+      expect(result.headers?.['X-Truncated']).toBe('true');
+      const body = result.body as string;
+      expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(EXPORT_MAX_BYTES);
+      const rows = body.split('\r\n').slice(1, -1);
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.length).toBeLessThan(8);
+    });
+
+    test('JSON: drops rows past the cap, sets X-Truncated, and stays under the cap', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: existingForm });
+      ddbMock.on(QueryCommand).resolves({ Items: oversizedItems() });
+
+      const result = (await adminModule.handler(
+        makeEvent('GET', '/api/forms/contact-us/submissions/export', undefined, false, true, {
+          format: 'json',
+        })
+      )) as APIGatewayProxyStructuredResultV2;
+
+      expect(result.statusCode).toBe(200);
+      expect(result.headers?.['X-Truncated']).toBe('true');
+      const body = result.body as string;
+      expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(EXPORT_MAX_BYTES);
+      const parsed = JSON.parse(body);
+      expect(parsed.submissions.length).toBeGreaterThan(0);
+      expect(parsed.submissions.length).toBeLessThan(8);
+    });
   });
 
   test('an unsupported format returns 400', async () => {

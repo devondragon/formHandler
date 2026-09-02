@@ -4,7 +4,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { FormConfigRepository, validateFormConfig } from '../shared/form-config';
-import { decodeCursor, SubmissionRepository, toCsv } from '../shared/submissions';
+import { decodeCursor, Submission, SubmissionRepository, toCsv } from '../shared/submissions';
 
 // create AWS SDK clients (module scope, exported for mocking in tests)
 export const dynamoClient = new DynamoDBClient();
@@ -41,6 +41,7 @@ function serveStatic(name: string, contentType: string): APIGatewayProxyResultV2
     headers: {
       'Content-Type': contentType,
       'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
     },
     body: readUiFile(name),
   };
@@ -159,6 +160,41 @@ const DEFAULT_SUBMISSIONS_LIMIT = 50;
 const MIN_SUBMISSIONS_LIMIT = 1;
 const MAX_SUBMISSIONS_LIMIT = 200;
 const EXPORT_MAX_ROWS = 10000;
+const EXPORT_MAX_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Serializes the longest prefix of `rows` whose body fits in
+ * `EXPORT_MAX_BYTES`. 10,000 rows of submitted text can be far larger than a
+ * Lambda response is allowed to be, and an oversized response fails as a 500
+ * with no partial data, so an export that would exceed the cap comes back
+ * short instead. Both serializers grow monotonically with the row count, so a
+ * binary search over the prefix length finds the cut in a handful of passes.
+ */
+function serializeWithinByteCap(
+  rows: Submission[],
+  serialize: (rows: Submission[]) => string
+): { body: string; capped: boolean } {
+  const full = serialize(rows);
+  if (Buffer.byteLength(full, 'utf8') <= EXPORT_MAX_BYTES) {
+    return { body: full, capped: false };
+  }
+
+  // `low` is the largest row count known to fit, `high` the smallest known not to.
+  let low = 0;
+  let high = rows.length;
+  let body = serialize([]);
+  while (high - low > 1) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = serialize(rows.slice(0, mid));
+    if (Buffer.byteLength(candidate, 'utf8') <= EXPORT_MAX_BYTES) {
+      low = mid;
+      body = candidate;
+    } else {
+      high = mid;
+    }
+  }
+  return { body, capped: true };
+}
 
 type QueryStringParams = Record<string, string | undefined> | undefined;
 interface ValidationError {
@@ -267,28 +303,24 @@ async function exportSubmissions(formId: string, qs: QueryStringParams): Promise
     maxRows: EXPORT_MAX_ROWS,
   });
 
-  const truncatedHeader: Record<string, string> = truncated ? { 'X-Truncated': 'true' } : {};
+  const serialized =
+    format === 'json'
+      ? serializeWithinByteCap(submissions, (rows) => JSON.stringify({ submissions: rows }))
+      : serializeWithinByteCap(submissions, toCsv);
 
-  if (format === 'json') {
-    return {
-      statusCode: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Disposition': `attachment; filename="${formId}-submissions.json"`,
-        ...truncatedHeader,
-      },
-      body: JSON.stringify({ submissions }),
-    };
-  }
+  const truncatedHeader: Record<string, string> =
+    truncated || serialized.capped ? { 'X-Truncated': 'true' } : {};
 
   return {
     statusCode: 200,
     headers: {
-      'Content-Type': 'text/csv; charset=utf-8',
-      'Content-Disposition': `attachment; filename="${formId}-submissions.csv"`,
+      'Content-Type': format === 'json' ? 'application/json' : 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${formId}-submissions.${format}"`,
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
       ...truncatedHeader,
     },
-    body: toCsv(submissions),
+    body: serialized.body,
   };
 }
 
