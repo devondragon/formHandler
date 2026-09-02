@@ -371,7 +371,7 @@
   // ---- Submissions ----
 
   // Column order: the two columns every submission has, then the submitted
-  // fields alphabetically, then the bookkeeping attributes.
+  // fields sorted by field name, then the bookkeeping attributes.
   var LEADING_COLUMNS = ['timestamp', 'sourceIP'];
   var TRAILING_COLUMNS = ['id', 'forwardedFor', 'formId'];
 

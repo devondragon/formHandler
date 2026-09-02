@@ -93,10 +93,10 @@ The form handler works in one of two modes, decided by whether the forms table h
 
 The **Submissions** action on a row of the forms table opens that form's submissions, newest first.
 
-* **Date range.** The From and To dates filter on the submission timestamp. Either bound can be left empty, and the To date includes the whole day you pick.
+* **Date range.** The From and To dates filter on the submission timestamp. Either bound can be left empty. Dates are interpreted in UTC, and the To date includes the whole day you pick, ending at 23:59:59.999 UTC.
 * **Search.** The search box matches a case-insensitive substring against every text value in a submission, including the submitted fields, so you do not have to know which field holds the text.
 * **Load more.** A page of 50 submissions loads at a time. **Load more** appears while there are more to fetch and appends the next page to the table.
-* **Columns.** The table shows `timestamp` and `sourceIP`, then the submitted fields found in the loaded rows in alphabetical order, then `id`, `forwardedFor`, and `formId`. Different submissions to one form can carry different fields, so the columns are recalculated as more rows load.
+* **Columns.** The table shows `timestamp` and `sourceIP`, then the submitted fields found in the loaded rows sorted by field name, then `id`, `forwardedFor`, and `formId`. Different submissions to one form can carry different fields, so the columns are recalculated as more rows load. The export uses a different order: `id`, `timestamp`, `sourceIP`, `forwardedFor`, `formId`, then the remaining fields sorted by field name.
 * **Export.** **Export CSV** and **Export JSON** download every submission matching the current date range and search, not only the rows on screen. An export is capped at 10,000 rows and 5 MB, whichever comes first; past either cap the file holds the newest matches that fit and the rest are omitted. Narrow the date range to get the remainder.
 * **CSV and spreadsheet formulas.** In the CSV export, a cell whose value starts with `=`, `+`, `-`, `@`, a tab, or a carriage return is prefixed with a single quote (`'`) so the spreadsheet shows it as text instead of executing it as a formula.
 
