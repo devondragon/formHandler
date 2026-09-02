@@ -16,6 +16,10 @@ Install dependencies with `npm ci`.
 
 The Lambda functions run on the Node.js 24 runtime and use AWS SDK for JavaScript v3.
 
+## Upgrading from earlier versions
+
+Lambda logs now go to CDK-managed log groups with generated names instead of the fixed names used previously. The old `/aws/lambda/form-handler-lambda` and `/aws/lambda/form-handler-cors-lambda` groups keep their history and can be deleted manually once you no longer need them.
+
 ## Configuration
 
 Before getting started, copy the `example.env` file to a `.env` file and replace the default configurations with your own.

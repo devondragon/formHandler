@@ -114,7 +114,6 @@ export class FormHandlerStack extends Stack {
     let lambdaName = "form-handler-lambda";
     const memorySize = 512;
     const dynamoLambdaLogGroup = new aws_logs.LogGroup(this, 'FormHandlerLambdaLogGroup', {
-      logGroupName: `/aws/lambda/${lambdaName}`,
       retention: aws_logs.RetentionDays.ONE_WEEK,
       removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
     });
@@ -162,7 +161,6 @@ export class FormHandlerStack extends Stack {
     // Create a Lambda function for handling OPTIONS requests (CORS)
     let corsLambdaName = "form-handler-cors-lambda";
     const optionsLambdaLogGroup = new aws_logs.LogGroup(this, 'FormHandlerCorsLambdaLogGroup', {
-      logGroupName: `/aws/lambda/${corsLambdaName}`,
       retention: aws_logs.RetentionDays.ONE_WEEK,
       removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
     });
