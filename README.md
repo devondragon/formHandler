@@ -89,10 +89,17 @@ The form handler works in one of two modes, decided by whether the forms table h
   * a form with `oneSubmissionPerIp` on that already has a submission from the same source IP address gets `429 Only one submission per IP address is allowed for this form`;
   * otherwise the submission is stored, and a notification email is sent only if `emailNotificationsEnabled` is on.
 
-## Future Features
+### Submission reports
 
-I plan to add a web reporting engine to allow you to view, search, and export form submission data.
+The **Submissions** action on a row of the forms table opens that form's submissions, newest first.
 
+* **Date range.** The From and To dates filter on the submission timestamp. Either bound can be left empty, and the To date includes the whole day you pick.
+* **Search.** The search box matches a case-insensitive substring against every text value in a submission, including the submitted fields, so you do not have to know which field holds the text.
+* **Load more.** A page of 50 submissions loads at a time. **Load more** appears while there are more to fetch and appends the next page to the table.
+* **Columns.** The table shows `timestamp` and `sourceIP`, then the submitted fields found in the loaded rows in alphabetical order, then `id`, `forwardedFor`, and `formId`. Different submissions to one form can carry different fields, so the columns are recalculated as more rows load.
+* **Export.** **Export CSV** and **Export JSON** download every submission matching the current date range and search, not only the rows on screen. An export is capped at 10,000 rows; past that the file holds the 10,000 newest matches and the rest are omitted. Narrow the date range to get the remainder.
+
+Reports are per form and read the submissions table by `formId`. Submissions received before any form configuration existed (legacy mode, described above) have no `formId`, so they do not appear in any form's report or export.
 
 ## Testing the Application
 
