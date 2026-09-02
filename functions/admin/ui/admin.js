@@ -75,6 +75,9 @@
     els.submissionsHeadRow = document.getElementById('submissions-head-row');
     els.submissionsTableBody = document.getElementById('submissions-table-body');
     els.submissionsLoadMoreBtn = document.getElementById('submissions-load-more-btn');
+    // Captured from the static markup so the default empty-state message
+    // matches ui/index.html without duplicating the string here.
+    submissionsEmptyDefaultText = els.submissionsEmpty ? els.submissionsEmpty.textContent : '';
   }
 
   function getIdToken() {
@@ -375,6 +378,14 @@
   var LEADING_COLUMNS = ['timestamp', 'sourceIP'];
   var TRAILING_COLUMNS = ['id', 'forwardedFor', 'formId'];
 
+  // Shown in the empty-state element instead of the "no matches" message when
+  // a page came back with zero rows but more of the partition is still
+  // unscanned (a search term filtered out everything on this page, but later
+  // pages might still match). Set in cacheElements() from the static markup.
+  var submissionsEmptyDefaultText = '';
+  var SUBMISSIONS_SCANNING_MESSAGE =
+    'No matches yet in the scanned range. Click Load more to continue.';
+
   // The form whose submissions are on screen, the rows loaded so far (they
   // accumulate as "Load more" is clicked), and the cursor for the next page.
   var submissionsForm = null;
@@ -616,11 +627,19 @@
     });
 
     var isEmpty = submissionRows.length === 0;
+    // Zero rows with a cursor means the scan has more of the partition left
+    // to look at, not that the search has no matches; say so instead of
+    // showing the "no matches" message, and leave Load more up so the caller
+    // can keep going.
+    var stillScanning = isEmpty && !!submissionsCursor;
     if (els.submissionsTable) {
       els.submissionsTable.hidden = isEmpty;
     }
     if (els.submissionsEmpty) {
       els.submissionsEmpty.hidden = !isEmpty;
+      els.submissionsEmpty.textContent = stillScanning
+        ? SUBMISSIONS_SCANNING_MESSAGE
+        : submissionsEmptyDefaultText;
     }
     if (els.submissionsLoadMoreBtn) {
       els.submissionsLoadMoreBtn.hidden = !submissionsCursor;
