@@ -1,8 +1,9 @@
-import { DynamoDBClient, DescribeTableCommand } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { SESClient, SendEmailCommand, SendEmailCommandInput } from '@aws-sdk/client-ses';
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { randomUUID } from 'node:crypto';
+import { FormConfig, FormConfigRepository } from '../shared/form-config';
 
 // create AWS SDK clients
 export const dynamoClient = process.env.AWS_SAM_LOCAL
@@ -16,37 +17,39 @@ export const documentClient = DynamoDBDocumentClient.from(dynamoClient, {
 });
 export const sesClient = new SESClient();
 
+/** How long a "config mode is active" result is trusted before it is re-checked. */
+const CONFIG_CHECK_TTL_MS = 60_000;
 
-let isFormConfigActive: boolean | null = null;
+let configCache: { active: boolean; checkedAt: number } | null = null;
+
+/** Test-only hook: clears the cached config-mode check. */
+export const resetConfigCache = (): void => {
+    configCache = null;
+};
 
 const checkIfFormConfigActive = async (): Promise<boolean> => {
+    const now = Date.now();
+    if (configCache && now - configCache.checkedAt < CONFIG_CHECK_TTL_MS) {
+        return configCache.active;
+    }
+
     const formTableName = process.env.FORM_TABLE_NAME;
+    let active = false;
+
     if (!formTableName) {
         console.log('Form table name is undefined. Make sure it is set in the environment variables.');
-        return false;
-    }
-    try {
-        // Check if table exists
-        const tableDescription = await dynamoClient.send(new DescribeTableCommand({ TableName: formTableName }));
-        if (!tableDescription.Table) {
-            console.log(`Table ${formTableName} does not exist.`);
-            return false;
+    } else {
+        try {
+            const repository = new FormConfigRepository(documentClient, formTableName);
+            active = await repository.hasAny();
+        } catch (error) {
+            console.log(`Error checking table ${formTableName}:`, error);
+            active = false;
         }
-
-        // Check if table is populated
-        const data = await documentClient.send(new ScanCommand({ TableName: formTableName }));
-        if (data.Count && data.Count > 0) {
-            console.log(`Table ${formTableName} is populated.`);
-            return true;
-        } else {
-            console.log(`Table ${formTableName} is not populated.`);
-            return false;
-        }
-
-    } catch (error) {
-        console.log(`Error checking table ${formTableName}:`, error);
-        return false;
     }
+
+    configCache = { active, checkedAt: now };
+    return active;
 }
 
 const writeFormSubmissionToDynamoDB = async (item: any) => {
@@ -62,10 +65,14 @@ const writeFormSubmissionToDynamoDB = async (item: any) => {
     }));
 }
 
-const sendEmail = async (item: any) => {
+const sendEmail = async (item: any, config?: FormConfig) => {
+    if (config && !config.emailNotificationsEnabled) {
+        console.log(`Email notifications disabled for form ${config.formId}`);
+        return;
+    }
 
     const emailFrom = process.env.EMAIL_FROM;
-    const emailTo = process.env.EMAIL_TO;
+    const emailTo = config?.notificationEmail ?? process.env.EMAIL_TO;
     if (!emailFrom || !emailTo) {
         throw new Error('Email from or to is undefined. Make sure it is set in the environment variables.');
     }
@@ -94,7 +101,7 @@ const sendEmail = async (item: any) => {
                 },
             },
             Subject: {
-                Data: 'New Form Submission',
+                Data: config ? `New submission: ${config.formName}` : 'New Form Submission',
             },
         },
     };
@@ -105,9 +112,7 @@ const sendEmail = async (item: any) => {
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
     console.log("input:", JSON.stringify(event, undefined, 2));
 
-    if (isFormConfigActive === null) {
-        isFormConfigActive = await checkIfFormConfigActive();
-    }
+    const isFormConfigActive = await checkIfFormConfigActive();
 
     // parse the JSON body of the event
     let data: any;
@@ -126,9 +131,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         };
     }
 
-    // validate the input
+    // validate the input and, in config mode, load the matching form configuration
+    let config: FormConfig | undefined;
     if (isFormConfigActive) {
-        let formId = data.formId;
+        const formId = data.formId;
         if (!formId) {
             console.log('Form ID is missing');
             return {
@@ -137,6 +143,69 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
                     "Content-Type": "application/json",
                 },
                 body: JSON.stringify({ message: "Form ID is missing" }),
+            };
+        }
+
+        try {
+            const formTableName = process.env.FORM_TABLE_NAME as string;
+            const repository = new FormConfigRepository(documentClient, formTableName);
+            config = await repository.get(formId);
+
+            if (!config) {
+                console.log(`Unknown form: ${formId}`);
+                return {
+                    statusCode: 404,
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({ message: "Unknown form" }),
+                };
+            }
+
+            if (!config.enabled) {
+                console.log(`Form is disabled: ${formId}`);
+                return {
+                    statusCode: 403,
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({ message: "Form is disabled" }),
+                };
+            }
+
+            if (config.oneSubmissionPerIp) {
+                const formSubmissionTableName = process.env.FORM_SUBMISSIONS_TABLE_NAME as string;
+                const sourceIp = event.requestContext.http.sourceIp;
+                const existing = await documentClient.send(new QueryCommand({
+                    TableName: formSubmissionTableName,
+                    IndexName: 'formId-sourceIP-index',
+                    KeyConditionExpression: 'formId = :formId AND sourceIP = :sourceIP',
+                    ExpressionAttributeValues: {
+                        ':formId': formId,
+                        ':sourceIP': sourceIp,
+                    },
+                    Limit: 1,
+                }));
+
+                if (existing.Count && existing.Count > 0) {
+                    console.log(`Duplicate submission blocked for form ${formId} from ${sourceIp}`);
+                    return {
+                        statusCode: 429,
+                        headers: {
+                            "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({ message: "Only one submission per IP address is allowed for this form" }),
+                    };
+                }
+            }
+        } catch (err) {
+            console.log('Error reading form configuration', err);
+            return {
+                statusCode: 500,
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ message: "Error reading form configuration" }),
             };
         }
     }
@@ -162,7 +231,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     try {
-        await sendEmail(data);
+        await sendEmail(data, config);
         console.log('Email sent');
     } catch (err) {
         console.log('Error sending email', err);
