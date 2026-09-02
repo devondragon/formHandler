@@ -270,6 +270,10 @@ export class FormHandlerStack extends Stack {
         // The UI is plain HTML/CSS/JS with no build step. esbuild does not know
         // about it, so copy it next to the bundle; the handler reads it from
         // `path.join(__dirname, 'ui')` at runtime.
+        //
+        // `cp -r` is POSIX-only and runs on the host whenever esbuild bundles
+        // locally. On a host without it (Windows outside WSL), CDK falls back
+        // to bundling in Docker, where the command runs in the Linux image.
         commandHooks: {
           beforeBundling: () => [],
           beforeInstall: () => [],

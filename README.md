@@ -60,6 +60,8 @@ aws cognito-idp admin-set-user-password --user-pool-id <AdminUserPoolId> --usern
 aws cognito-idp admin-create-user --user-pool-id <AdminUserPoolId> --username <email> --message-action RESEND
 ```
 
+A session lasts 60 minutes. The page holds the Cognito ID token for that hour and does not refresh it, so after 60 minutes the admin API starts rejecting requests and the page asks you to sign in again.
+
 Changing `ADMIN_EMAIL` and redeploying replaces the seeded administrator: the CDK-managed Cognito user for the previous address is deleted, and a new one is created for the new address. It does not affect any other administrators you created by hand.
 
 ### Form configuration
@@ -70,7 +72,7 @@ Each form is a record in the forms table with these fields:
 * `formName`: a human-readable name, 1 to 200 characters. Used in the notification email subject.
 * `notificationEmail`: the address that notification emails go to. Required when `emailNotificationsEnabled` is on; when it is missing, notifications fall back to `EMAIL_TO`.
 * `emailNotificationsEnabled`: whether a submission to this form sends a notification email.
-* `oneSubmissionPerIp`: whether a source IP address is limited to a single submission for this form.
+* `oneSubmissionPerIp`: whether a source IP address is limited to a single submission for this form. Two caveats. The check is a query followed by a write, not an atomic condition, so two near-simultaneous submissions from one address can both get through. And the address is the one API Gateway sees, so if a proxy or CDN sits in front of the API, every visitor shares a single IP address and only the first submission is accepted.
 * `enabled`: whether the form accepts submissions at all.
 
 `createdAt` and `updatedAt` are set by the server.
