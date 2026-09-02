@@ -3,7 +3,7 @@ import { DynamoDBDocumentClient, PutCommand, QueryCommand } from '@aws-sdk/lib-d
 import { SESClient, SendEmailCommand, SendEmailCommandInput } from '@aws-sdk/client-ses';
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { randomUUID } from 'node:crypto';
-import { FormConfig, FormConfigRepository } from '../shared/form-config';
+import { FORM_ID_PATTERN, FormConfig, FormConfigRepository } from '../shared/form-config';
 
 // create AWS SDK clients
 export const dynamoClient = process.env.AWS_SAM_LOCAL
@@ -44,6 +44,14 @@ const checkIfFormConfigActive = async (): Promise<boolean> => {
             active = await repository.hasAny();
         } catch (error) {
             console.log(`Error checking table ${formTableName}:`, error);
+            // A failed check must not downgrade the handler into legacy mode,
+            // where every submission is accepted. Keep the last known-good
+            // answer and leave the cache untouched so the next request retries
+            // immediately. Only a cold start with nothing cached falls back to
+            // `active = false`.
+            if (configCache) {
+                return configCache.active;
+            }
             active = false;
         }
     }
@@ -143,6 +151,20 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
                     "Content-Type": "application/json",
                 },
                 body: JSON.stringify({ message: "Form ID is missing" }),
+            };
+        }
+
+        // A non-string or malformed formId can never match a stored configuration
+        // (and would make DynamoDB reject the key), so treat it as an unknown form
+        // rather than letting the lookup fail with a 500.
+        if (typeof formId !== 'string' || !FORM_ID_PATTERN.test(formId)) {
+            console.log('Malformed form ID:', formId);
+            return {
+                statusCode: 404,
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ message: "Unknown form" }),
             };
         }
 

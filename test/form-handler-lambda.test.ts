@@ -264,8 +264,40 @@ test('escapes HTML in submitted field values before emailing them', async () => 
 
 describe('config mode enforcement', () => {
   beforeEach(() => {
+    // Each test re-requires the handler in an isolated module registry, but
+    // clear the module-scope cache explicitly so a test can never inherit a
+    // previous test's config-mode answer.
+    handlerModule.resetConfigCache();
+
     // At least one form config exists, so the handler switches to config mode.
     documentMock.on(ScanCommand).resolves({ Count: 1 });
+  });
+
+  test('returns 404 without a configuration lookup when formId is not a string', async () => {
+    const event = buildEvent(JSON.stringify({ formId: 1234, name: 'John Doe' }));
+
+    const result = (await handlerModule.handler(event)) as APIGatewayProxyStructuredResultV2;
+
+    expect(result).toEqual({
+      statusCode: 404,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'Unknown form' }),
+    });
+    expect(documentMock.commandCalls(GetCommand)).toHaveLength(0);
+    expect(documentMock.commandCalls(PutCommand)).toHaveLength(0);
+  });
+
+  test('returns 404 when formId contains characters outside the allowed pattern', async () => {
+    const event = buildEvent(JSON.stringify({ formId: 'has space', name: 'John Doe' }));
+
+    const result = (await handlerModule.handler(event)) as APIGatewayProxyStructuredResultV2;
+
+    expect(result).toEqual({
+      statusCode: 404,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'Unknown form' }),
+    });
+    expect(documentMock.commandCalls(GetCommand)).toHaveLength(0);
   });
 
   test('returns 404 when the formId has no matching configuration', async () => {
@@ -317,6 +349,7 @@ describe('config mode enforcement', () => {
     const queryInput = queryCalls[0].args[0].input as Record<string, any>;
     expect(queryInput.TableName).toBe('formSubmissions');
     expect(queryInput.IndexName).toBe('formId-sourceIP-index');
+    expect(queryInput.KeyConditionExpression).toBe('formId = :formId AND sourceIP = :sourceIP');
     expect(queryInput.ExpressionAttributeValues).toEqual({ ':formId': '1234', ':sourceIP': '127.0.0.1' });
   });
 
@@ -395,5 +428,38 @@ describe('config mode enforcement', () => {
     await handlerModule.handler(buildEvent());
 
     expect(documentMock.commandCalls(ScanCommand)).toHaveLength(1);
+  });
+
+  test('keeps enforcing config mode when a re-check after the TTL fails', async () => {
+    documentMock.on(GetCommand).resolves({ Item: { ...existingFormConfig, emailNotificationsEnabled: false } });
+
+    // First call caches active: true.
+    const first = (await handlerModule.handler(buildEvent())) as APIGatewayProxyStructuredResultV2;
+    expect(first.statusCode).toBe(200);
+
+    // Move past the 60 second TTL and make the re-check fail.
+    jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_000);
+    documentMock.on(ScanCommand).rejects(new Error('scan failed'));
+    documentMock.on(GetCommand).resolves({});
+
+    const result = (await handlerModule.handler(buildEvent())) as APIGatewayProxyStructuredResultV2;
+
+    // Still config mode: the unknown formId is rejected rather than accepted
+    // as a legacy submission.
+    expect(result).toEqual({
+      statusCode: 404,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'Unknown form' }),
+    });
+    expect(documentMock.commandCalls(ScanCommand)).toHaveLength(2);
+  });
+
+  test('falls back to legacy mode when the very first config-mode check fails', async () => {
+    documentMock.on(ScanCommand).rejects(new Error('scan failed'));
+
+    const result = (await handlerModule.handler(buildEvent())) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(200);
+    expect(documentMock.commandCalls(PutCommand)).toHaveLength(1);
   });
 });
