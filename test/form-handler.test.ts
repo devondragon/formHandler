@@ -104,6 +104,28 @@ describe('FormHandlerStack', () => {
     });
   });
 
+  test('grants the admin Lambda dynamodb:Query on the submissions table and its GSIs', () => {
+    const template = buildTemplate();
+
+    template.hasResourceProperties(
+      'AWS::IAM::Policy',
+      Match.objectLike({
+        PolicyDocument: Match.objectLike({
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: Match.arrayWith(['dynamodb:Query']),
+              Resource: Match.arrayWith([
+                Match.objectLike({
+                  'Fn::Join': ['', Match.arrayWith(['/index/*'])],
+                }),
+              ]),
+            }),
+          ]),
+        }),
+      })
+    );
+  });
+
   test('creates a single admin user pool that only administrators can add users to', () => {
     template.resourceCountIs('AWS::Cognito::UserPool', 1);
     template.hasResourceProperties('AWS::Cognito::UserPool', {

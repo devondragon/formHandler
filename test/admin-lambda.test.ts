@@ -1,4 +1,11 @@
-import { DynamoDBDocumentClient, DeleteCommand, GetCommand, PutCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  DynamoDBDocumentClient,
+  DeleteCommand,
+  GetCommand,
+  PutCommand,
+  QueryCommand,
+  ScanCommand,
+} from '@aws-sdk/lib-dynamodb';
 import { mockClient } from 'aws-sdk-client-mock';
 import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda';
 import * as adminModule from '../functions/admin';
@@ -9,13 +16,15 @@ const ddbMock = mockClient(adminModule.documentClient);
  * Builds an HTTP API payload v2 event. `authorized` mirrors what API Gateway does:
  * `requestContext.authorizer.jwt` is present only when a JWT authorizer accepted
  * the request, so passing `false` simulates an `/api` route reached without one.
+ * `queryStringParameters` mirrors API Gateway's parsed query string.
  */
 function makeEvent(
   method: string,
   path: string,
   body?: string,
   isBase64Encoded = false,
-  authorized = true
+  authorized = true,
+  queryStringParameters?: Record<string, string>
 ): APIGatewayProxyEventV2 {
   const authorizerContext = authorized
     ? { authorizer: { jwt: { claims: { sub: 'test' }, scopes: null } } }
@@ -45,8 +54,11 @@ function makeEvent(
     version: '2.0',
     routeKey: `${method} ${path}`,
     rawPath: path,
-    rawQueryString: '',
+    rawQueryString: queryStringParameters
+      ? new URLSearchParams(queryStringParameters).toString()
+      : '',
     headers: {},
+    queryStringParameters,
     requestContext,
     body,
     isBase64Encoded,
@@ -84,6 +96,7 @@ beforeEach(() => {
 
   ddbMock.reset();
   process.env.FORM_TABLE_NAME = 'forms';
+  process.env.FORM_SUBMISSIONS_TABLE_NAME = 'formSubmissions';
   process.env.USER_POOL_ID = 'us-east-1_ABC123';
   process.env.USER_POOL_CLIENT_ID = 'client123abc';
   process.env.AWS_REGION = 'us-east-1';
@@ -364,6 +377,206 @@ describe('DELETE /api/forms/{formId}', () => {
     const deleteCalls = ddbMock.commandCalls(DeleteCommand);
     expect(deleteCalls).toHaveLength(1);
     expect(deleteCalls[0].args[0].input.TableName).toBe('forms');
+  });
+});
+
+describe('GET /api/forms/{formId}/submissions', () => {
+  function submissionItem(id: string, timestamp: string, extra: Record<string, unknown> = {}) {
+    return { id, timestamp, formId: 'contact-us', sourceIP: '1.2.3.4', ...extra };
+  }
+
+  test('returns submissions and a nextCursor when more pages remain', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingForm });
+    ddbMock.on(QueryCommand).resolves({
+      Items: [submissionItem('1', '2026-01-02T00:00:00.000Z', { name: 'Jane' })],
+      LastEvaluatedKey: { id: '1', timestamp: '2026-01-02T00:00:00.000Z', formId: 'contact-us' },
+    });
+
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/contact-us/submissions', undefined, false, true, { limit: '1' })
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(200);
+    const parsed = JSON.parse(result.body as string);
+    expect(parsed.submissions).toHaveLength(1);
+    expect(parsed.submissions[0]).toMatchObject({ id: '1' });
+    expect(parsed.nextCursor).toEqual(expect.any(String));
+  });
+
+  test('returns no nextCursor when the index is exhausted', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingForm });
+    ddbMock.on(QueryCommand).resolves({
+      Items: [submissionItem('1', '2026-01-02T00:00:00.000Z')],
+    });
+
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/contact-us/submissions')
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(200);
+    const parsed = JSON.parse(result.body as string);
+    expect(parsed.nextCursor).toBeUndefined();
+  });
+
+  test('limit outside 1..200 returns 400', async () => {
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/contact-us/submissions', undefined, false, true, { limit: '0' })
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body as string)).toEqual({ message: 'limit must be between 1 and 200' });
+    expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(0);
+  });
+
+  test('limit that is not an integer returns 400', async () => {
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/contact-us/submissions', undefined, false, true, { limit: 'abc' })
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body as string)).toEqual({ message: 'limit must be between 1 and 200' });
+  });
+
+  test('a malformed from date returns 400', async () => {
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/contact-us/submissions', undefined, false, true, { from: 'not-a-date' })
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body as string)).toEqual({
+      message: 'from and to must be ISO 8601 dates',
+    });
+  });
+
+  test('a malformed cursor returns 400', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingForm });
+
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/contact-us/submissions', undefined, false, true, {
+        cursor: 'not-a-valid-cursor!!!',
+      })
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body as string)).toEqual({ message: 'Invalid cursor' });
+    expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(0);
+  });
+
+  test('an unknown form returns 404', async () => {
+    ddbMock.on(GetCommand).resolves({});
+
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/does-not-exist/submissions')
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(404);
+    expect(JSON.parse(result.body as string)).toEqual({ message: 'Form not found' });
+  });
+
+  test('a date-only "to" is treated as inclusive of that day in the key condition', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingForm });
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
+
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/contact-us/submissions', undefined, false, true, {
+        to: '2026-01-31',
+      })
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(200);
+    const input = ddbMock.commandCalls(QueryCommand)[0].args[0].input;
+    expect(input.ExpressionAttributeValues).toMatchObject({ ':to': '2026-01-31T23:59:59.999Z' });
+  });
+});
+
+describe('GET /api/forms/{formId}/submissions/export', () => {
+  function submissionItem(id: string, timestamp: string, extra: Record<string, unknown> = {}) {
+    return { id, timestamp, formId: 'contact-us', sourceIP: '1.2.3.4', forwardedFor: '', ...extra };
+  }
+
+  test('CSV export (default format) returns the right headers and body, with no X-Truncated header', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingForm });
+    ddbMock.on(QueryCommand).resolves({
+      Items: [submissionItem('1', '2026-01-02T00:00:00.000Z', { name: 'Jane' })],
+    });
+
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/contact-us/submissions/export')
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(200);
+    expect(result.headers?.['Content-Type']).toBe('text/csv; charset=utf-8');
+    expect(result.headers?.['Content-Disposition']).toBe(
+      'attachment; filename="contact-us-submissions.csv"'
+    );
+    expect(result.headers?.['X-Truncated']).toBeUndefined();
+    expect(result.body).toBe(
+      'id,timestamp,sourceIP,forwardedFor,formId,name\r\n' +
+        '1,2026-01-02T00:00:00.000Z,1.2.3.4,,contact-us,Jane\r\n'
+    );
+  });
+
+  test('JSON export returns the right headers and body', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingForm });
+    ddbMock.on(QueryCommand).resolves({
+      Items: [submissionItem('1', '2026-01-02T00:00:00.000Z', { name: 'Jane' })],
+    });
+
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/contact-us/submissions/export', undefined, false, true, {
+        format: 'json',
+      })
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(200);
+    expect(result.headers?.['Content-Type']).toBe('application/json');
+    expect(result.headers?.['Content-Disposition']).toBe(
+      'attachment; filename="contact-us-submissions.json"'
+    );
+    expect(JSON.parse(result.body as string)).toEqual({
+      submissions: [submissionItem('1', '2026-01-02T00:00:00.000Z', { name: 'Jane' })],
+    });
+  });
+
+  test('sets X-Truncated: true when the 10000-row export cap is hit', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingForm });
+    // One page carrying more than EXPORT_MAX_ROWS (10000) items forces
+    // queryAll to stop mid-page and report truncated: true.
+    const items = Array.from({ length: 10001 }, (_, i) =>
+      submissionItem(String(i), '2026-01-02T00:00:00.000Z')
+    );
+    ddbMock.on(QueryCommand).resolves({ Items: items });
+
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/contact-us/submissions/export')
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(200);
+    expect(result.headers?.['X-Truncated']).toBe('true');
+    const parsedRows = (result.body as string).split('\r\n').slice(1, -1);
+    expect(parsedRows).toHaveLength(10000);
+  });
+
+  test('an unsupported format returns 400', async () => {
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/contact-us/submissions/export', undefined, false, true, {
+        format: 'xml',
+      })
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body as string)).toEqual({ message: 'format must be csv or json' });
+  });
+
+  test('an unknown form returns 404', async () => {
+    ddbMock.on(GetCommand).resolves({});
+
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/does-not-exist/submissions/export')
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(404);
+    expect(JSON.parse(result.body as string)).toEqual({ message: 'Form not found' });
   });
 });
 

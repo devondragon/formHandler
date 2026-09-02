@@ -291,8 +291,10 @@ export class FormHandlerStack extends Stack {
       logGroup: adminLambdaLogGroup,
     });
 
-    // The admin API creates, updates, and deletes form configurations
+    // The admin API creates, updates, and deletes form configurations, and
+    // reads submissions (via the GSIs) for the reports feature.
     formTable.grantReadWriteData(adminLambda);
+    table.grantReadData(adminLambda);
 
     const adminLambdaIntegration = new HttpLambdaIntegration(
       "adminLambdaIntegration",

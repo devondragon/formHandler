@@ -4,6 +4,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { FormConfigRepository, validateFormConfig } from '../shared/form-config';
+import { decodeCursor, SubmissionRepository, toCsv } from '../shared/submissions';
 
 // create AWS SDK clients (module scope, exported for mocking in tests)
 export const dynamoClient = new DynamoDBClient();
@@ -110,6 +111,14 @@ function getRepository(): FormConfigRepository {
   return new FormConfigRepository(documentClient, tableName);
 }
 
+function getSubmissionRepository(): SubmissionRepository {
+  const tableName = process.env.FORM_SUBMISSIONS_TABLE_NAME;
+  if (!tableName) {
+    throw new Error('FORM_SUBMISSIONS_TABLE_NAME is not set');
+  }
+  return new SubmissionRepository(documentClient, tableName);
+}
+
 async function listForms(): Promise<APIGatewayProxyResultV2> {
   const forms = await getRepository().list();
   return json(200, { forms });
@@ -146,6 +155,143 @@ async function deleteForm(formId: string): Promise<APIGatewayProxyResultV2> {
   return { statusCode: 204 };
 }
 
+const DEFAULT_SUBMISSIONS_LIMIT = 50;
+const MIN_SUBMISSIONS_LIMIT = 1;
+const MAX_SUBMISSIONS_LIMIT = 200;
+const EXPORT_MAX_ROWS = 10000;
+
+type QueryStringParams = Record<string, string | undefined> | undefined;
+interface ValidationError {
+  message: string;
+}
+interface DateBounds {
+  from?: string;
+  to?: string;
+}
+
+const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+function isValidationError(value: unknown): value is ValidationError {
+  return typeof value === 'object' && value !== null && 'message' in value;
+}
+
+/** `limit` defaults to 50 and must be an integer in `1..200`. */
+function parseSubmissionsLimit(qs: QueryStringParams): number | ValidationError {
+  const raw = qs?.limit;
+  if (raw === undefined) {
+    return DEFAULT_SUBMISSIONS_LIMIT;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < MIN_SUBMISSIONS_LIMIT || value > MAX_SUBMISSIONS_LIMIT) {
+    return { message: 'limit must be between 1 and 200' };
+  }
+  return value;
+}
+
+/**
+ * Validates `from`/`to` as ISO 8601 date or date-time strings (anything
+ * `Date.parse` accepts). A date-only `to` (YYYY-MM-DD) is treated as
+ * inclusive of that day by appending the end-of-day time.
+ */
+function parseDateBounds(qs: QueryStringParams): DateBounds | ValidationError {
+  const { from, to } = qs ?? {};
+  const fromValid = from === undefined || !Number.isNaN(Date.parse(from));
+  const toValid = to === undefined || !Number.isNaN(Date.parse(to));
+  if (!fromValid || !toValid) {
+    return { message: 'from and to must be ISO 8601 dates' };
+  }
+  return {
+    from,
+    to: to !== undefined && DATE_ONLY_PATTERN.test(to) ? `${to}T23:59:59.999Z` : to,
+  };
+}
+
+async function listSubmissions(formId: string, qs: QueryStringParams): Promise<APIGatewayProxyResultV2> {
+  const limit = parseSubmissionsLimit(qs);
+  if (isValidationError(limit)) {
+    return json(400, limit);
+  }
+
+  const dateBounds = parseDateBounds(qs);
+  if (isValidationError(dateBounds)) {
+    return json(400, dateBounds);
+  }
+
+  const cursor = qs?.cursor;
+  if (cursor !== undefined) {
+    try {
+      decodeCursor(cursor);
+    } catch (err) {
+      console.warn('Invalid submissions pagination cursor', err);
+      return json(400, { message: 'Invalid cursor' });
+    }
+  }
+
+  const form = await getRepository().get(formId);
+  if (!form) {
+    return json(404, { message: 'Form not found' });
+  }
+
+  const result = await getSubmissionRepository().query({
+    formId,
+    from: dateBounds.from,
+    to: dateBounds.to,
+    q: qs?.q,
+    limit,
+    cursor,
+  });
+  return json(200, result);
+}
+
+async function exportSubmissions(formId: string, qs: QueryStringParams): Promise<APIGatewayProxyResultV2> {
+  const format = qs?.format ?? 'csv';
+  if (format !== 'csv' && format !== 'json') {
+    return json(400, { message: 'format must be csv or json' });
+  }
+
+  const dateBounds = parseDateBounds(qs);
+  if (isValidationError(dateBounds)) {
+    return json(400, dateBounds);
+  }
+
+  const form = await getRepository().get(formId);
+  if (!form) {
+    return json(404, { message: 'Form not found' });
+  }
+
+  const { submissions, truncated } = await getSubmissionRepository().queryAll({
+    formId,
+    from: dateBounds.from,
+    to: dateBounds.to,
+    q: qs?.q,
+    maxRows: EXPORT_MAX_ROWS,
+  });
+
+  const truncatedHeader: Record<string, string> = truncated ? { 'X-Truncated': 'true' } : {};
+
+  if (format === 'json') {
+    return {
+      statusCode: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Disposition': `attachment; filename="${formId}-submissions.json"`,
+        ...truncatedHeader,
+      },
+      body: JSON.stringify({ submissions }),
+    };
+  }
+
+  return {
+    statusCode: 200,
+    headers: {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${formId}-submissions.csv"`,
+      ...truncatedHeader,
+    },
+    body: toCsv(submissions),
+  };
+}
+
 /** API Gateway base64-encodes the body (e.g. for some client/proxy combinations); decode it before parsing. */
 function getRequestBody(event: APIGatewayProxyEventV2): string | undefined {
   if (event.body === undefined) {
@@ -155,6 +301,18 @@ function getRequestBody(event: APIGatewayProxyEventV2): string | undefined {
 }
 
 const FORM_ITEM_PATH = /^\/api\/forms\/([^/]+)$/;
+const FORM_SUBMISSIONS_PATH = /^\/api\/forms\/([^/]+)\/submissions$/;
+const FORM_SUBMISSIONS_EXPORT_PATH = /^\/api\/forms\/([^/]+)\/submissions\/export$/;
+
+/** Percent-decodes a form ID path segment, returning `undefined` on malformed input. */
+function decodeFormId(raw: string): string | undefined {
+  try {
+    return decodeURIComponent(raw);
+  } catch (err) {
+    console.warn('Invalid percent-encoding in form ID path segment', err);
+    return undefined;
+  }
+}
 
 /**
  * API Gateway populates `requestContext.authorizer.jwt` only when a JWT authorizer
@@ -198,13 +356,32 @@ async function route(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResu
     return method === 'GET' ? listForms() : json(405, { message: 'Method not allowed' });
   }
 
+  const exportMatch = FORM_SUBMISSIONS_EXPORT_PATH.exec(rawPath);
+  if (exportMatch) {
+    const formId = decodeFormId(exportMatch[1]);
+    if (formId === undefined) {
+      return json(404, { message: 'Form not found' });
+    }
+    return method === 'GET'
+      ? exportSubmissions(formId, event.queryStringParameters)
+      : json(405, { message: 'Method not allowed' });
+  }
+
+  const submissionsMatch = FORM_SUBMISSIONS_PATH.exec(rawPath);
+  if (submissionsMatch) {
+    const formId = decodeFormId(submissionsMatch[1]);
+    if (formId === undefined) {
+      return json(404, { message: 'Form not found' });
+    }
+    return method === 'GET'
+      ? listSubmissions(formId, event.queryStringParameters)
+      : json(405, { message: 'Method not allowed' });
+  }
+
   const formMatch = FORM_ITEM_PATH.exec(rawPath);
   if (formMatch) {
-    let formId: string;
-    try {
-      formId = decodeURIComponent(formMatch[1]);
-    } catch (err) {
-      console.warn('Invalid percent-encoding in form ID path segment', err);
+    const formId = decodeFormId(formMatch[1]);
+    if (formId === undefined) {
       return json(404, { message: 'Form not found' });
     }
     switch (method) {
