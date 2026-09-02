@@ -3,7 +3,7 @@ import * as path from 'path';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { FormConfigRepository, validateFormConfig } from '../shared/form-config';
+import { FORM_ID_PATTERN, FormConfigRepository, validateFormConfig } from '../shared/form-config';
 import { decodeCursor, Submission, SubmissionRepository, toCsv } from '../shared/submissions';
 
 // create AWS SDK clients (module scope, exported for mocking in tests)
@@ -206,6 +206,7 @@ interface DateBounds {
 }
 
 const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_DATE_PREFIX_PATTERN = /^\d{4}-\d{2}-\d{2}/;
 
 function isValidationError(value: unknown): value is ValidationError {
   return typeof value === 'object' && value !== null && 'message' in value;
@@ -225,20 +226,28 @@ function parseSubmissionsLimit(qs: QueryStringParams): number | ValidationError 
 }
 
 /**
- * Validates `from`/`to` as ISO 8601 date or date-time strings (anything
- * `Date.parse` accepts). A date-only `to` (YYYY-MM-DD) is treated as
- * inclusive of that day by appending the end-of-day time.
+ * Validates `from`/`to` as ISO 8601 date or date-time strings and normalizes
+ * them to UTC. The bounds are compared against stored `timestamp` values, which
+ * are UTC ISO 8601 strings, so a bound has to be in the same form to compare
+ * correctly: `2026-01-01T00:00:00+05:00` sorts after `2026-01-01T00:00:00.000Z`
+ * as a string but is earlier in time. Input `Date.parse` accepts but that is
+ * not ISO-shaped (`January 1, 2026`) is rejected rather than normalized, since
+ * `Date.parse` handles those formats inconsistently across engines. A date-only
+ * `to` (YYYY-MM-DD) is treated as inclusive of that day, ending at 23:59:59.999
+ * UTC.
  */
 function parseDateBounds(qs: QueryStringParams): DateBounds | ValidationError {
   const { from, to } = qs ?? {};
-  const fromValid = from === undefined || !Number.isNaN(Date.parse(from));
-  const toValid = to === undefined || !Number.isNaN(Date.parse(to));
-  if (!fromValid || !toValid) {
+  const isValid = (value: string | undefined) =>
+    value === undefined || (ISO_DATE_PREFIX_PATTERN.test(value) && !Number.isNaN(Date.parse(value)));
+  if (!isValid(from) || !isValid(to)) {
     return { message: 'from and to must be ISO 8601 dates' };
   }
+
+  const toEndOfDay = to !== undefined && DATE_ONLY_PATTERN.test(to) ? `${to}T23:59:59.999Z` : to;
   return {
-    from,
-    to: to !== undefined && DATE_ONLY_PATTERN.test(to) ? `${to}T23:59:59.999Z` : to,
+    from: from === undefined ? undefined : new Date(from).toISOString(),
+    to: toEndOfDay === undefined ? undefined : new Date(toEndOfDay).toISOString(),
   };
 }
 
@@ -315,6 +324,8 @@ async function exportSubmissions(formId: string, qs: QueryStringParams): Promise
     statusCode: 200,
     headers: {
       'Content-Type': format === 'json' ? 'application/json' : 'text/csv; charset=utf-8',
+      // The route checked `formId` against FORM_ID_PATTERN, so the filename
+      // cannot carry a quote or a newline out of the header.
       'Content-Disposition': `attachment; filename="${formId}-submissions.${format}"`,
       'Cache-Control': 'no-store',
       'X-Content-Type-Options': 'nosniff',
@@ -344,6 +355,18 @@ function decodeFormId(raw: string): string | undefined {
     console.warn('Invalid percent-encoding in form ID path segment', err);
     return undefined;
   }
+}
+
+/**
+ * Decodes a form ID and rejects anything that could not be a stored form ID.
+ * The submissions routes put the form ID in the `Content-Disposition` filename,
+ * so it has to be constrained by the route rather than by whatever a form
+ * record happens to hold: a quote or a newline in the value would otherwise
+ * escape the header.
+ */
+function decodeValidFormId(raw: string): string | undefined {
+  const formId = decodeFormId(raw);
+  return formId !== undefined && FORM_ID_PATTERN.test(formId) ? formId : undefined;
 }
 
 /**
@@ -390,7 +413,7 @@ async function route(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResu
 
   const exportMatch = FORM_SUBMISSIONS_EXPORT_PATH.exec(rawPath);
   if (exportMatch) {
-    const formId = decodeFormId(exportMatch[1]);
+    const formId = decodeValidFormId(exportMatch[1]);
     if (formId === undefined) {
       return json(404, { message: 'Form not found' });
     }
@@ -401,7 +424,7 @@ async function route(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResu
 
   const submissionsMatch = FORM_SUBMISSIONS_PATH.exec(rawPath);
   if (submissionsMatch) {
-    const formId = decodeFormId(submissionsMatch[1]);
+    const formId = decodeValidFormId(submissionsMatch[1]);
     if (formId === undefined) {
       return json(404, { message: 'Form not found' });
     }

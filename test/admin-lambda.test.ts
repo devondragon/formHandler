@@ -78,6 +78,7 @@ const existingForm = {
 
 const ENV_KEYS = [
   'FORM_TABLE_NAME',
+  'FORM_SUBMISSIONS_TABLE_NAME',
   'USER_POOL_ID',
   'USER_POOL_CLIENT_ID',
   'AWS_REGION',
@@ -475,6 +476,113 @@ describe('GET /api/forms/{formId}/submissions', () => {
     expect(JSON.parse(result.body as string)).toEqual({ message: 'Form not found' });
   });
 
+  test('a from bound with a UTC offset is normalized to UTC before it reaches DynamoDB', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingForm });
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
+
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/contact-us/submissions', undefined, false, true, {
+        from: '2026-01-01T00:00:00+05:00',
+      })
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(200);
+    const input = ddbMock.commandCalls(QueryCommand)[0].args[0].input;
+    expect(input.ExpressionAttributeValues).toMatchObject({ ':from': '2025-12-31T19:00:00.000Z' });
+  });
+
+  test('a date-only from bound is normalized to midnight UTC', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingForm });
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
+
+    await adminModule.handler(
+      makeEvent('GET', '/api/forms/contact-us/submissions', undefined, false, true, {
+        from: '2026-01-01',
+      })
+    );
+
+    const input = ddbMock.commandCalls(QueryCommand)[0].args[0].input;
+    expect(input.ExpressionAttributeValues).toMatchObject({ ':from': '2026-01-01T00:00:00.000Z' });
+  });
+
+  test('a date Date.parse accepts but that is not ISO-shaped returns 400', async () => {
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/contact-us/submissions', undefined, false, true, {
+        from: 'January 1, 2026',
+      })
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body as string)).toEqual({
+      message: 'from and to must be ISO 8601 dates',
+    });
+    expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(0);
+  });
+
+  test('a form ID that cannot be a form ID returns 404 without reading DynamoDB', async () => {
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/bad%20id/submissions')
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(404);
+    expect(JSON.parse(result.body as string)).toEqual({ message: 'Form not found' });
+    expect(ddbMock.calls()).toHaveLength(0);
+  });
+
+  test('an unsupported method returns 405', async () => {
+    const result = (await adminModule.handler(
+      makeEvent('POST', '/api/forms/contact-us/submissions')
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(405);
+    expect(JSON.parse(result.body as string)).toEqual({ message: 'Method not allowed' });
+  });
+
+  test('an unset FORM_SUBMISSIONS_TABLE_NAME returns 500', async () => {
+    delete process.env.FORM_SUBMISSIONS_TABLE_NAME;
+    ddbMock.on(GetCommand).resolves({ Item: existingForm });
+
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/contact-us/submissions')
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(500);
+    expect(JSON.parse(result.body as string)).toEqual({ message: 'Internal error' });
+  });
+
+  test('a search term pages across DynamoDB pages until the limit is filled', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: existingForm });
+    ddbMock
+      .on(QueryCommand)
+      .resolvesOnce({
+        Items: [
+          submissionItem('1', '2026-01-04T00:00:00.000Z', { name: 'Jane' }),
+          submissionItem('2', '2026-01-03T00:00:00.000Z', { name: 'Bob' }),
+        ],
+        LastEvaluatedKey: { id: '2', timestamp: '2026-01-03T00:00:00.000Z', formId: 'contact-us' },
+      })
+      .resolvesOnce({
+        Items: [
+          submissionItem('3', '2026-01-02T00:00:00.000Z', { name: 'Jane' }),
+          submissionItem('4', '2026-01-01T00:00:00.000Z', { name: 'Jane' }),
+        ],
+        LastEvaluatedKey: { id: '4', timestamp: '2026-01-01T00:00:00.000Z', formId: 'contact-us' },
+      });
+
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/contact-us/submissions', undefined, false, true, {
+        q: 'jane',
+        limit: '2',
+      })
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(200);
+    const parsed = JSON.parse(result.body as string);
+    expect(parsed.submissions.map((s: any) => s.id)).toEqual(['1', '3']);
+    expect(parsed.nextCursor).toEqual(expect.any(String));
+    expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(2);
+  });
+
   test('a date-only "to" is treated as inclusive of that day in the key condition', async () => {
     ddbMock.on(GetCommand).resolves({ Item: existingForm });
     ddbMock.on(QueryCommand).resolves({ Items: [] });
@@ -645,6 +753,25 @@ describe('GET /api/forms/{formId}/submissions/export', () => {
 
     expect(result.statusCode).toBe(404);
     expect(JSON.parse(result.body as string)).toEqual({ message: 'Form not found' });
+  });
+
+  test('a form ID that could break out of the filename returns 404 without reading DynamoDB', async () => {
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/a%22b/submissions/export')
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(404);
+    expect(JSON.parse(result.body as string)).toEqual({ message: 'Form not found' });
+    expect(ddbMock.calls()).toHaveLength(0);
+  });
+
+  test('an unsupported method returns 405', async () => {
+    const result = (await adminModule.handler(
+      makeEvent('POST', '/api/forms/contact-us/submissions/export')
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(405);
+    expect(JSON.parse(result.body as string)).toEqual({ message: 'Method not allowed' });
   });
 });
 
