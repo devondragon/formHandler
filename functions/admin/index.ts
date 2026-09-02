@@ -49,9 +49,9 @@ function serveIndexHtml(): APIGatewayProxyResultV2 {
   const userPoolClientId = process.env.USER_POOL_CLIENT_ID || '';
 
   const html = readUiFile('index.html')
-    .split('__COGNITO_REGION__').join(region)
-    .split('__USER_POOL_ID__').join(userPoolId)
-    .split('__USER_POOL_CLIENT_ID__').join(userPoolClientId);
+    .split('__COGNITO_REGION__').join(JSON.stringify(region))
+    .split('__USER_POOL_ID__').join(JSON.stringify(userPoolId))
+    .split('__USER_POOL_CLIENT_ID__').join(JSON.stringify(userPoolClientId));
 
   return {
     statusCode: 200,
@@ -89,7 +89,7 @@ async function putForm(formId: string, rawBody: string | undefined): Promise<API
   try {
     body = rawBody ? JSON.parse(rawBody) : {};
   } catch (err) {
-    console.error('Invalid JSON in PUT /api/forms request body', err);
+    console.warn('Invalid JSON in PUT /api/forms request body', err);
     return json(400, { message: 'Invalid JSON in request body' });
   }
 
@@ -105,6 +105,14 @@ async function putForm(formId: string, rawBody: string | undefined): Promise<API
 async function deleteForm(formId: string): Promise<APIGatewayProxyResultV2> {
   await getRepository().delete(formId);
   return { statusCode: 204 };
+}
+
+/** API Gateway base64-encodes the body (e.g. for some client/proxy combinations); decode it before parsing. */
+function getRequestBody(event: APIGatewayProxyEventV2): string | undefined {
+  if (event.body === undefined) {
+    return undefined;
+  }
+  return event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString('utf8') : event.body;
 }
 
 const FORM_ITEM_PATH = /^\/api\/forms\/([^/]+)$/;
@@ -135,12 +143,18 @@ async function route(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResu
 
   const formMatch = FORM_ITEM_PATH.exec(rawPath);
   if (formMatch) {
-    const formId = decodeURIComponent(formMatch[1]);
+    let formId: string;
+    try {
+      formId = decodeURIComponent(formMatch[1]);
+    } catch (err) {
+      console.warn('Invalid percent-encoding in form ID path segment', err);
+      return json(404, { message: 'Form not found' });
+    }
     switch (method) {
       case 'GET':
         return getForm(formId);
       case 'PUT':
-        return putForm(formId, event.body);
+        return putForm(formId, getRequestBody(event));
       case 'DELETE':
         return deleteForm(formId);
       default:

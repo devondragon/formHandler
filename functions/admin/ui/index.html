@@ -24,7 +24,7 @@
         <label for="login-password">Password</label>
         <input type="password" id="login-password" name="password" autocomplete="current-password" required>
       </div>
-      <button type="submit">Sign in</button>
+      <button type="submit" id="login-submit-btn">Sign in</button>
       <p id="login-error" class="error" role="alert"></p>
     </form>
 
@@ -46,6 +46,7 @@
   <section id="app" hidden>
     <h2>Forms</h2>
     <button type="button" id="new-form-btn">New form</button>
+    <p id="forms-error" class="error" role="alert"></p>
 
     <table id="forms-table">
       <thead>
@@ -103,9 +104,9 @@
 
 <script>
   window.ADMIN_CONFIG = {
-    region: "__COGNITO_REGION__",
-    userPoolId: "__USER_POOL_ID__",
-    clientId: "__USER_POOL_CLIENT_ID__"
+    region: __COGNITO_REGION__,
+    userPoolId: __USER_POOL_ID__,
+    clientId: __USER_POOL_CLIENT_ID__
   };
 </script>
 <script src="admin.js"></script>

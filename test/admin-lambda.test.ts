@@ -5,7 +5,12 @@ import * as adminModule from '../functions/admin';
 
 const ddbMock = mockClient(adminModule.documentClient);
 
-function makeEvent(method: string, path: string, body?: string): APIGatewayProxyEventV2 {
+function makeEvent(
+  method: string,
+  path: string,
+  body?: string,
+  isBase64Encoded = false
+): APIGatewayProxyEventV2 {
   return {
     version: '2.0',
     routeKey: `${method} ${path}`,
@@ -31,7 +36,7 @@ function makeEvent(method: string, path: string, body?: string): APIGatewayProxy
       timeEpoch: 1428582896000,
     },
     body,
-    isBase64Encoded: false,
+    isBase64Encoded,
   };
 }
 
@@ -56,7 +61,7 @@ beforeEach(() => {
 });
 
 describe('static UI serving', () => {
-  test('GET / returns 200 HTML with placeholders replaced and Cache-Control: no-store', async () => {
+  test('GET / returns 200 HTML with placeholders replaced by JSON-encoded env values and Cache-Control: no-store', async () => {
     const result = (await adminModule.handler(
       makeEvent('GET', '/')
     )) as APIGatewayProxyStructuredResultV2;
@@ -64,12 +69,24 @@ describe('static UI serving', () => {
     expect(result.statusCode).toBe(200);
     expect(result.headers?.['Content-Type']).toBe('text/html; charset=utf-8');
     expect(result.headers?.['Cache-Control']).toBe('no-store');
-    expect(result.body).toContain('us-east-1');
-    expect(result.body).toContain('us-east-1_ABC123');
-    expect(result.body).toContain('client123abc');
+    expect(result.body).toContain(JSON.stringify('us-east-1'));
+    expect(result.body).toContain(JSON.stringify('us-east-1_ABC123'));
+    expect(result.body).toContain(JSON.stringify('client123abc'));
     expect(result.body).not.toContain('__COGNITO_REGION__');
     expect(result.body).not.toContain('__USER_POOL_ID__');
     expect(result.body).not.toContain('__USER_POOL_CLIENT_ID__');
+  });
+
+  test('GET /index.html serves the same placeholder-replaced page as GET /', async () => {
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/index.html')
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(200);
+    expect(result.headers?.['Content-Type']).toBe('text/html; charset=utf-8');
+    expect(result.headers?.['Cache-Control']).toBe('no-store');
+    expect(result.body).toContain(JSON.stringify('us-east-1'));
+    expect(result.body).not.toContain('__COGNITO_REGION__');
   });
 
   test('GET /admin.js returns 200 with application/javascript content type', async () => {
@@ -202,6 +219,29 @@ describe('PUT /api/forms/{formId}', () => {
     expect(putCalls).toHaveLength(1);
     expect(putCalls[0].args[0].input.TableName).toBe('forms');
   });
+
+  test('a base64-encoded body is decoded before parsing', async () => {
+    ddbMock.on(GetCommand).resolves({});
+    ddbMock.on(PutCommand).resolves({});
+
+    const body = JSON.stringify({
+      formName: 'Contact Us',
+      notificationEmail: 'owner@example.com',
+      emailNotificationsEnabled: true,
+      oneSubmissionPerIp: false,
+      enabled: true,
+    });
+    const encodedBody = Buffer.from(body, 'utf8').toString('base64');
+
+    const result = (await adminModule.handler(
+      makeEvent('PUT', '/api/forms/contact-us', encodedBody, true)
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(200);
+    const parsed = JSON.parse(result.body as string);
+    expect(parsed.formId).toBe('contact-us');
+    expect(parsed.formName).toBe('Contact Us');
+  });
 });
 
 describe('DELETE /api/forms/{formId}', () => {
@@ -227,7 +267,18 @@ describe('routing errors', () => {
     )) as APIGatewayProxyStructuredResultV2;
 
     expect(result.statusCode).toBe(404);
+    expect(result.headers?.['Content-Type']).toBe('application/json');
     expect(JSON.parse(result.body as string)).toEqual({ message: 'Not found' });
+  });
+
+  test('an invalid percent-encoded form ID returns 404', async () => {
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/api/forms/%zz')
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.statusCode).toBe(404);
+    expect(result.headers?.['Content-Type']).toBe('application/json');
+    expect(JSON.parse(result.body as string)).toEqual({ message: 'Form not found' });
   });
 
   test('unsupported method on /api/forms returns 405', async () => {
@@ -236,6 +287,7 @@ describe('routing errors', () => {
     )) as APIGatewayProxyStructuredResultV2;
 
     expect(result.statusCode).toBe(405);
+    expect(result.headers?.['Content-Type']).toBe('application/json');
     expect(JSON.parse(result.body as string)).toEqual({ message: 'Method not allowed' });
   });
 
@@ -247,6 +299,7 @@ describe('routing errors', () => {
     )) as APIGatewayProxyStructuredResultV2;
 
     expect(result.statusCode).toBe(500);
+    expect(result.headers?.['Content-Type']).toBe('application/json');
     expect(JSON.parse(result.body as string)).toEqual({ message: 'Internal error' });
   });
 });

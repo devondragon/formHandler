@@ -23,6 +23,8 @@
     els.newPasswordError = document.getElementById('new-password-error');
     els.app = document.getElementById('app');
     els.formsTableBody = document.getElementById('forms-table-body');
+    els.loginSubmitBtn = document.getElementById('login-submit-btn');
+    els.formsError = document.getElementById('forms-error');
     els.newFormBtn = document.getElementById('new-form-btn');
     els.formEditor = document.getElementById('form-editor');
     els.formEditorTitle = document.getElementById('form-editor-title');
@@ -55,6 +57,8 @@
     els.signOutBtn.hidden = true;
     els.newPasswordForm.hidden = true;
     els.loginForm.hidden = false;
+    els.loginForm.reset();
+    pendingChallenge = null;
   }
 
   function showApp() {
@@ -76,7 +80,10 @@
     }).then(function (response) {
       return response.json().then(function (data) {
         if (!response.ok) {
-          var err = new Error(data && data.message ? data.message : 'Request failed');
+          // Cognito's error responses spell the field "message"; some other
+          // AWS error shapes use "Message" instead.
+          var errorMessage = (data && (data.message || data.Message)) || 'Request failed';
+          var err = new Error(errorMessage);
           err.data = data;
           throw err;
         }
@@ -127,8 +134,7 @@
       setIdToken(data.AuthenticationResult.IdToken);
       pendingChallenge = null;
       showApp();
-      loadForms();
-      return;
+      return loadForms();
     }
 
     throw new Error('Unexpected authentication response');
@@ -165,7 +171,8 @@
       }
       return response.json().then(function (data) {
         if (!response.ok) {
-          var err = new Error(data && data.message ? data.message : 'Request failed');
+          var errorMessage = (data && (data.message || data.Message)) || 'Request failed';
+          var err = new Error(errorMessage);
           err.data = data;
           throw err;
         }
@@ -177,9 +184,14 @@
   // ---- Forms list ----
 
   function loadForms() {
-    return api('/api/forms').then(function (data) {
-      renderFormsTable((data && data.forms) || []);
-    });
+    return api('/api/forms')
+      .then(function (data) {
+        els.formsError.textContent = '';
+        renderFormsTable((data && data.forms) || []);
+      })
+      .catch(function (err) {
+        els.formsError.textContent = err.message;
+      });
   }
 
   function renderFormsTable(forms) {
@@ -218,7 +230,7 @@
     deleteBtn.type = 'button';
     deleteBtn.textContent = 'Delete';
     deleteBtn.addEventListener('click', function () {
-      deleteForm(form.formId);
+      deleteForm(form.formId, deleteBtn);
     });
     actionsTd.appendChild(deleteBtn);
 
@@ -226,14 +238,18 @@
     return tr;
   }
 
-  function deleteForm(formId) {
+  function deleteForm(formId, buttonEl) {
     if (!window.confirm('Delete form "' + formId + '"? This cannot be undone.')) {
       return;
     }
+    buttonEl.disabled = true;
     api('/api/forms/' + encodeURIComponent(formId), { method: 'DELETE' })
       .then(loadForms)
       .catch(function (err) {
         window.alert(err.message);
+      })
+      .finally(function () {
+        buttonEl.disabled = false;
       });
   }
 
@@ -265,6 +281,7 @@
   function saveForm(event) {
     event.preventDefault();
     els.editorError.textContent = '';
+    els.editorSaveBtn.disabled = true;
 
     var formId = editingFormId || els.editorFormId.value.trim();
     var body = {
@@ -286,6 +303,9 @@
       .catch(function (err) {
         var messages = (err.data && err.data.errors) || [err.message];
         els.editorError.textContent = messages.join(' ');
+      })
+      .finally(function () {
+        els.editorSaveBtn.disabled = false;
       });
   }
 
@@ -294,9 +314,14 @@
   function onLoginSubmit(event) {
     event.preventDefault();
     els.loginError.textContent = '';
-    signIn(els.loginEmail.value, els.loginPassword.value).catch(function (err) {
-      els.loginError.textContent = err.message;
-    });
+    els.loginSubmitBtn.disabled = true;
+    signIn(els.loginEmail.value, els.loginPassword.value)
+      .catch(function (err) {
+        els.loginError.textContent = err.message;
+      })
+      .finally(function () {
+        els.loginSubmitBtn.disabled = false;
+      });
   }
 
   function onNewPasswordSubmit(event) {
@@ -330,10 +355,7 @@
 
     if (getIdToken()) {
       showApp();
-      loadForms().catch(function () {
-        // api() already shows the login form on a 401; other failures are
-        // left visible via the (empty) forms table for the user to retry.
-      });
+      loadForms();
     } else {
       showLogin();
     }
