@@ -59,7 +59,18 @@ let ScanCommand: typeof ScanCommandType;
 let DescribeTableCommand: typeof DescribeTableCommandType;
 let SendEmailCommand: typeof SendEmailCommandType;
 
+const ENV_KEYS = ['FORM_TABLE_NAME', 'FORM_SUBMISSIONS_TABLE_NAME', 'EMAIL_FROM', 'EMAIL_TO'] as const;
+let savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
+
 beforeEach(() => {
+  jest.spyOn(console, 'log').mockImplementation(() => {});
+  jest.spyOn(console, 'error').mockImplementation(() => {});
+
+  savedEnv = {};
+  for (const key of ENV_KEYS) {
+    savedEnv[key] = process.env[key];
+  }
+
   process.env.FORM_TABLE_NAME = 'forms';
   process.env.FORM_SUBMISSIONS_TABLE_NAME = 'formSubmissions';
   process.env.EMAIL_FROM = 'test@test.com';
@@ -94,6 +105,19 @@ beforeEach(() => {
   documentMock.on(ScanCommand).resolves({ Count: 0 });
   documentMock.on(PutCommand).resolves({});
   sesMock.on(SendEmailCommand).resolves({ MessageId: 'test-message-id' });
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
+
+  for (const key of ENV_KEYS) {
+    const original = savedEnv[key];
+    if (original === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = original;
+    }
+  }
 });
 
 test('returns 400 for an invalid JSON body', async () => {
