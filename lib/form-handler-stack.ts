@@ -9,11 +9,10 @@ import {
 
 } from "aws-cdk-lib";
 import { Construct } from 'constructs';
-import { HttpLambdaIntegration } from "@aws-cdk/aws-apigatewayv2-integrations-alpha";
+import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import * as aws_logs from 'aws-cdk-lib/aws-logs';
-import * as apigwv2 from '@aws-cdk/aws-apigatewayv2-alpha';
-import * as actions from "aws-cdk-lib/aws-ses-actions";
+import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as dotenv from 'dotenv';
 
@@ -114,10 +113,14 @@ export class FormHandlerStack extends Stack {
     // Create AWS Lambda function to save form submissions to DynamoDB and send alert emails
     let lambdaName = "form-handler-lambda";
     const memorySize = 512;
+    const dynamoLambdaLogGroup = new aws_logs.LogGroup(this, 'FormHandlerLambdaLogGroup', {
+      retention: aws_logs.RetentionDays.ONE_WEEK,
+      removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+    });
     const dynamoLambda = new NodejsFunction(this, lambdaName, {
       functionName: lambdaName,
       description: "Saves Form submissions to DynamoDB and send alert email",
-      runtime: aws_lambda.Runtime.NODEJS_18_X,
+      runtime: aws_lambda.Runtime.NODEJS_24_X,
       memorySize: memorySize,
       timeout: Duration.seconds(30),
       entry: "functions/form-handler/index.ts", // accepts .js, .jsx, .ts, .tsx and .mjs files
@@ -133,7 +136,7 @@ export class FormHandlerStack extends Stack {
         EMAIL_FROM: emailFrom,
         EMAIL_TO: emailTo,
       },
-      logRetention: aws_logs.RetentionDays.ONE_WEEK,
+      logGroup: dynamoLambdaLogGroup,
     });
 
     // Grant write permissions to our Lambda function for our DynamoDB table
@@ -149,8 +152,6 @@ export class FormHandlerStack extends Stack {
     // Add the policy to our Lambda function's role
     dynamoLambda.addToRolePolicy(sesPolicy);
 
-    const logGroup = new aws_logs.LogGroup(this, 'ApiGatewayAccessLogs-FormHandler');
-
     // Define API Gateway integration with our main Lambda function
     const dynamoLambdaIntegration = new HttpLambdaIntegration(
       "dynamoLambdaIntegration",
@@ -159,10 +160,14 @@ export class FormHandlerStack extends Stack {
 
     // Create a Lambda function for handling OPTIONS requests (CORS)
     let corsLambdaName = "form-handler-cors-lambda";
+    const optionsLambdaLogGroup = new aws_logs.LogGroup(this, 'FormHandlerCorsLambdaLogGroup', {
+      retention: aws_logs.RetentionDays.ONE_WEEK,
+      removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+    });
     const optionsLambda = new NodejsFunction(this, corsLambdaName, {
       functionName: corsLambdaName,
       description: "Provides dynamic CORS header support",
-      runtime: aws_lambda.Runtime.NODEJS_18_X,
+      runtime: aws_lambda.Runtime.NODEJS_24_X,
       memorySize: memorySize,
       timeout: Duration.seconds(30),
       entry: "functions/cors-handler/index.ts", // accepts .js, .jsx, .ts, .tsx and .mjs files
@@ -175,7 +180,7 @@ export class FormHandlerStack extends Stack {
       environment: {
         FORM_TABLE_NAME: formTableName,
       },
-      logRetention: aws_logs.RetentionDays.ONE_WEEK,
+      logGroup: optionsLambdaLogGroup,
     });
     const optionsLambdaIntegration = new HttpLambdaIntegration("optionsLambdaIntegration", optionsLambda);
 
