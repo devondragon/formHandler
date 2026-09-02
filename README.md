@@ -18,23 +18,64 @@ The Lambda functions run on the Node.js 24 runtime and use AWS SDK for JavaScrip
 
 ## Upgrading from earlier versions
 
+The forms table key changed from the composite key (`formId`, `formName`) to a partition key of `formId` alone, because a form configuration has to be addressable by its ID. DynamoDB cannot change the key schema of an existing table, and the table name is fixed by `FORM_TABLE_NAME`, so before deploying this version you must either delete the existing `forms` table or point `FORM_TABLE_NAME` at a new name. The table held no data in any earlier release, so nothing is lost by deleting it.
+
 Lambda logs now go to CDK-managed log groups with generated names instead of the fixed names used previously. The old `/aws/lambda/form-handler-lambda` and `/aws/lambda/form-handler-cors-lambda` groups keep their history and can be deleted manually once you no longer need them.
 
 ## Configuration
 
-Before getting started, copy the `example.env` file to a `.env` file and replace the default configurations with your own.
+Before getting started, copy the `example.env` file to a `.env` file and replace the default configurations with your own. `ADMIN_EMAIL` is required: it is the email address of the first administrator, and the deployment creates a Cognito user for it.
 
-**Note:** As of now, the project doesn't support form configurations and takes in any data sent to it, sending alerts to the email configured in the `.env` file.
+With no form configurations stored, the handler accepts any data sent to it and sends alerts to the `EMAIL_TO` address, as it always has. Once you create your first form in the admin interface, per-form configuration takes over. See [Admin](#admin) below.
 
 ## Security Note
 
 Though this is a functional system, it comes with potential security vulnerabilities. This includes the possibility of receiving an influx of fake form submissions from bots or malicious attackers which could lead to increased AWS costs. Also, as it currently stands, the system has minimal protection against XSS and other injection attacks. It is recommended to integrate security measures that suit your requirements.
 
+## Admin
+
+The stack deploys a small web admin for creating and configuring forms. It is a single Lambda behind its own API Gateway HTTP API that serves both the admin page and its JSON API. There is no S3 bucket and no separate front-end build.
+
+The deployment prints the admin address as the `AdminUrl` CloudFormation output.
+
+### Signing in
+
+Authentication is an Amazon Cognito user pool. Self sign-up is disabled, so the only accounts are ones an administrator creates.
+
+1. Set `ADMIN_EMAIL` in your `.env` file before deploying. The deployment creates a Cognito user with that email address as the username.
+2. Cognito emails that address a temporary password.
+3. Open `AdminUrl`, sign in with the email address and the temporary password. Cognito requires a new password on first login, and the page prompts for one before it lets you in.
+
+To add more administrators, create additional users in the Cognito user pool (its ID is the `AdminUserPoolId` output). The pool's app client ID is the `AdminUserPoolClientId` output.
+
+### Form configuration
+
+Each form is a record in the forms table with these fields:
+
+* `formId`: the identifier the client sends with the submission. Required, and limited to letters, digits, underscores, and hyphens (1 to 64 characters).
+* `formName`: a human-readable name, 1 to 200 characters. Used in the notification email subject.
+* `notificationEmail`: the address that notification emails go to. Required when `emailNotificationsEnabled` is on; when it is missing, notifications fall back to `EMAIL_TO`.
+* `emailNotificationsEnabled`: whether a submission to this form sends a notification email.
+* `oneSubmissionPerIp`: whether a source IP address is limited to a single submission for this form.
+* `enabled`: whether the form accepts submissions at all.
+
+`createdAt` and `updatedAt` are set by the server.
+
+### How submissions are handled
+
+The form handler works in one of two modes, decided by whether the forms table holds any configuration at all. The check is cached for 60 seconds, so a newly created first form takes up to a minute to take effect.
+
+* **No form configurations exist (legacy mode).** Behavior is unchanged from earlier versions: any submission is accepted and stored, and an email goes to `EMAIL_TO`.
+* **At least one form configuration exists.** Submissions are matched to their configuration:
+  * a submission with no `formId` gets `400 Form ID is missing`;
+  * a `formId` with no matching configuration gets `404 Unknown form`;
+  * a form with `enabled` off gets `403 Form is disabled`;
+  * a form with `oneSubmissionPerIp` on that already has a submission from the same source IP address gets `429 Only one submission per IP address is allowed for this form`;
+  * otherwise the submission is stored, and a notification email is sent only if `emailNotificationsEnabled` is on.
+
 ## Future Features
 
-I plan to add a web admin which will allow you to configure forms with form ID validation, per form email notification settings, per IP address submission limits, etc...
-
-There will also be a web reporting engine to allow you to view, search, and export form submission data.
+I plan to add a web reporting engine to allow you to view, search, and export form submission data.
 
 
 ## Testing the Application
