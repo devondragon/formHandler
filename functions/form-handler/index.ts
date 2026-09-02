@@ -1,25 +1,18 @@
-import { DynamoDB } from 'aws-sdk';
-import { Handler, Context, Callback } from 'aws-lambda';
+import { DynamoDBClient, DescribeTableCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { SESClient, SendEmailCommand, SendEmailCommandInput } from '@aws-sdk/client-ses';
+import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { v4 as uuidv4 } from 'uuid';
-import { SES } from "aws-sdk";
-import { SendEmailRequest } from "aws-sdk/clients/ses";
 
 // create AWS SDK clients
-let dynamoDB: DynamoDB;
+export const dynamoClient = process.env.AWS_SAM_LOCAL
+    ? new DynamoDBClient({ endpoint: "http://docker.for.mac.localhost:8000/" }) // MacOS
+    // Windows: new DynamoDBClient({ endpoint: "http://docker.for.windows.localhost:8000/" })
+    // Linux: new DynamoDBClient({ endpoint: "http://127.0.0.1:8000" })
+    : new DynamoDBClient();
 
-if (process.env.AWS_SAM_LOCAL) {
-    // MacOS
-    dynamoDB = new DynamoDB({ endpoint: "http://docker.for.mac.localhost:8000/" });
-    // Windows
-    // dynamo = new DynamoDB({ endpoint: "http://docker.for.windows.localhost:8000/" });
-    // Linux
-    // dynamo = new DynamoDB({ endpoint: "http://127.0.0.1:8000" });
-} else {
-    dynamoDB = new DynamoDB();
-}
-
-const dynamo = new DynamoDB.DocumentClient({ service: dynamoDB });
-const ses = new SES();
+export const documentClient = DynamoDBDocumentClient.from(dynamoClient);
+export const sesClient = new SESClient();
 
 
 let isFormConfigActive: boolean | null = null;
@@ -32,14 +25,14 @@ const checkIfFormConfigActive = async (): Promise<boolean> => {
     }
     try {
         // Check if table exists
-        const tableDescription = await dynamoDB.describeTable({ TableName: formTableName }).promise();
+        const tableDescription = await dynamoClient.send(new DescribeTableCommand({ TableName: formTableName }));
         if (!tableDescription.Table) {
             console.log(`Table ${formTableName} does not exist.`);
             return false;
         }
 
         // Check if table is populated
-        const data = await dynamo.scan({ TableName: formTableName }).promise();
+        const data = await documentClient.send(new ScanCommand({ TableName: formTableName }));
         if (data.Count && data.Count > 0) {
             console.log(`Table ${formTableName} is populated.`);
             return true;
@@ -61,12 +54,10 @@ const writeFormSubmissionToDynamoDB = async (item: any) => {
         throw new Error('Table name is undefined. Make sure it is set in the environment variables.');
     }
 
-    const params = {
+    return documentClient.send(new PutCommand({
         TableName: formSubmissionTableName,
-        Item: item
-    };
-
-    return dynamo.put(params).promise();
+        Item: item,
+    }));
 }
 
 const sendEmail = async (item: any) => {
@@ -86,7 +77,7 @@ const sendEmail = async (item: any) => {
         htmlBody += `<p><strong>${key}:</strong> ${value}</p>`;
     });
 
-    const emailParams: SendEmailRequest = {
+    const emailParams: SendEmailCommandInput = {
         // TODO: set these to use ENV variables and/or load from Form data
         Source: emailFrom,
         Destination: {
@@ -106,10 +97,10 @@ const sendEmail = async (item: any) => {
         },
     };
 
-    return ses.sendEmail(emailParams).promise();
+    return sesClient.send(new SendEmailCommand(emailParams));
 }
 
-export const handler: Handler = async (event, _context: Context, _callback: Callback) => {
+export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
     console.log("input:", JSON.stringify(event, undefined, 2));
 
     if (isFormConfigActive === null) {
