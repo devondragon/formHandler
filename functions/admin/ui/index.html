@@ -100,6 +100,46 @@
       <p id="editor-error" class="error" role="alert"></p>
     </form>
   </section>
+
+  <section id="submissions-section" hidden>
+    <button type="button" id="submissions-back-btn">Back to forms</button>
+    <h2 id="submissions-title">Submissions</h2>
+
+    <form id="submissions-filters">
+      <div>
+        <label for="submissions-from">From</label>
+        <input type="date" id="submissions-from" name="from">
+      </div>
+      <div>
+        <label for="submissions-to">To</label>
+        <input type="date" id="submissions-to" name="to">
+      </div>
+      <div>
+        <label for="submissions-search">Search</label>
+        <input type="text" id="submissions-search" name="q">
+      </div>
+      <button type="submit" id="submissions-apply-btn">Apply</button>
+    </form>
+
+    <div class="submissions-actions">
+      <button type="button" id="export-csv-btn">Export CSV</button>
+      <button type="button" id="export-json-btn">Export JSON</button>
+    </div>
+
+    <p id="submissions-error" class="error" role="alert"></p>
+    <p id="submissions-empty" hidden>No submissions match these filters.</p>
+
+    <div class="table-scroll">
+      <table id="submissions-table">
+        <thead>
+          <tr id="submissions-head-row"></tr>
+        </thead>
+        <tbody id="submissions-table-body"></tbody>
+      </table>
+    </div>
+
+    <button type="button" id="submissions-load-more-btn" hidden>Load more</button>
+  </section>
 </main>
 
 <script src="admin.js" data-config='__ADMIN_CONFIG__'></script>
