@@ -6,6 +6,16 @@ The stack includes multiple DynamoDB tables and Node.js AWS Lambda functions whi
 
 This project is perfect for use cases where you need to handle web form submissions without the need for a complex back-end system.
 
+## Requirements
+
+- Node.js 22 or newer (Node.js 24 recommended; `.nvmrc` is provided)
+- npm
+- An AWS account with an SES sender email address verified
+
+Install dependencies with `npm ci`.
+
+The Lambda functions run on the Node.js 24 runtime and use AWS SDK for JavaScript v3.
+
 ## Configuration
 
 Before getting started, copy the `example.env` file to a `.env` file and replace the default configurations with your own.
