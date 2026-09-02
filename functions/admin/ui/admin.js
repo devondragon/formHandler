@@ -120,10 +120,17 @@
 
   function handleAuthResult(data) {
     if (data.ChallengeName === 'NEW_PASSWORD_REQUIRED') {
+      // The pool uses email as a username attribute, so the account's real
+      // username is a Cognito-generated id, not the address that was typed in.
+      // InitiateAuth returns it as USER_ID_FOR_SRP, and RespondToAuthChallenge
+      // must echo that value back as USERNAME; sending the email instead makes
+      // Cognito reject the challenge response.
       pendingChallenge = {
         challengeName: data.ChallengeName,
         session: data.Session,
-        username: els.loginEmail.value,
+        username:
+          (data.ChallengeParameters && data.ChallengeParameters.USER_ID_FOR_SRP) ||
+          els.loginEmail.value,
       };
       els.loginForm.hidden = true;
       els.newPasswordForm.hidden = false;
