@@ -98,6 +98,7 @@ The **Submissions** action on a row of the forms table opens that form's submiss
 * **Load more.** A page of 50 submissions loads at a time. **Load more** appears while there are more to fetch and appends the next page to the table.
 * **Columns.** The table shows `timestamp` and `sourceIP`, then the submitted fields found in the loaded rows in alphabetical order, then `id`, `forwardedFor`, and `formId`. Different submissions to one form can carry different fields, so the columns are recalculated as more rows load.
 * **Export.** **Export CSV** and **Export JSON** download every submission matching the current date range and search, not only the rows on screen. An export is capped at 10,000 rows; past that the file holds the 10,000 newest matches and the rest are omitted. Narrow the date range to get the remainder.
+* **CSV and spreadsheet formulas.** In the CSV export, a cell whose value starts with `=`, `+`, `-`, `@`, a tab, or a carriage return is prefixed with a single quote (`'`) so the spreadsheet shows it as text instead of executing it as a formula.
 
 Reports are per form and read the submissions table by `formId`. Submissions received before any form configuration existed (legacy mode, described above) have no `formId`, so they do not appear in any form's report or export.
 

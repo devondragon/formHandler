@@ -74,8 +74,18 @@ export function decodeCursor(cursor: string): SubmissionCursorKey {
   return { id, timestamp, formId };
 }
 
+/**
+ * Leading characters that make a spreadsheet evaluate a cell as a formula
+ * instead of showing it as text. Tab and carriage return are included because
+ * Excel skips leading whitespace before deciding, so `\t=cmd()` is a formula.
+ */
+const CSV_FORMULA_PREFIXES = ['=', '+', '-', '@', '\t', '\r'];
+
 function csvCell(value: unknown): string {
-  const raw = typeof value === 'string' ? value : JSON.stringify(value);
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  // The apostrophe goes on before RFC 4180 quoting, so that it lands inside the
+  // quotes and the spreadsheet sees it as the cell's first character.
+  const raw = CSV_FORMULA_PREFIXES.includes(text.charAt(0)) ? `'${text}` : text;
   if (/["\r\n,]/.test(raw)) {
     return `"${raw.replace(/"/g, '""')}"`;
   }
@@ -84,9 +94,10 @@ function csvCell(value: unknown): string {
 
 /**
  * Serializes rows to RFC 4180 CSV. Columns are the five fixed submission
- * fields, then every other attribute name found across the rows sorted
- * alphabetically. Missing attributes become empty cells; non-string values
- * are JSON-stringified; rows end with CRLF.
+ * fields, then every other attribute name found across the rows sorted by
+ * field name. Missing attributes become empty cells; non-string values are
+ * JSON-stringified; cells that would read as a spreadsheet formula are
+ * prefixed with `'`; rows end with CRLF.
  */
 export function toCsv(rows: Submission[]): string {
   const otherColumns = new Set<string>();

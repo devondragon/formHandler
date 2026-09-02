@@ -149,6 +149,56 @@ describe('toCsv', () => {
     expect(csv.split('\r\n')).toHaveLength(3); // header, row, trailing empty
   });
 
+  test.each([
+    ['equals', '=1+1', "'=1+1"],
+    ['plus', '+1', "'+1"],
+    ['minus', '-1+1', "'-1+1"],
+    ['at', '@SUM(A1)', "'@SUM(A1)"],
+  ])('prefixes a %s-leading value with a single quote', (_name, value, expected) => {
+    const rows = [
+      { id: '1', timestamp: 't', sourceIP: 's', forwardedFor: 'f', formId: 'a', note: value },
+    ];
+    const lines = toCsv(rows).split('\r\n');
+    expect(lines[1]).toBe(`1,t,s,f,a,${expected}`);
+  });
+
+  test.each([
+    ['tab', '\tcmd'],
+    ['carriage return', '\rcmd'],
+  ])('prefixes a %s-leading value with a single quote and quotes it if needed', (_name, value) => {
+    const rows = [
+      { id: '1', timestamp: 't', sourceIP: 's', forwardedFor: 'f', formId: 'a', note: value },
+    ];
+    const lines = toCsv(rows).split('\r\n');
+    // A leading \r still triggers RFC 4180 quoting, a leading tab does not.
+    const expected = value === '\rcmd' ? `"'\rcmd"` : "'\tcmd";
+    expect(lines[1]).toBe(`1,t,s,f,a,${expected}`);
+  });
+
+  test('prefixes a non-string value whose JSON form starts with a trigger character', () => {
+    const rows = [
+      { id: '1', timestamp: 't', sourceIP: 's', forwardedFor: 'f', formId: 'a', amount: -5 },
+    ];
+    const lines = toCsv(rows).split('\r\n');
+    expect(lines[1]).toBe("1,t,s,f,a,'-5");
+  });
+
+  test('prefixes a header cell whose attribute name starts with a trigger character', () => {
+    const rows = [
+      { id: '1', timestamp: 't', sourceIP: 's', forwardedFor: 'f', formId: 'a', '=name': 'x' },
+    ];
+    const [header] = toCsv(rows).split('\r\n');
+    expect(header).toBe("id,timestamp,sourceIP,forwardedFor,formId,'=name");
+  });
+
+  test('leaves a value with a trigger character elsewhere in the string alone', () => {
+    const rows = [
+      { id: '1', timestamp: 't', sourceIP: 's', forwardedFor: 'f', formId: 'a', note: 'a=b' },
+    ];
+    const lines = toCsv(rows).split('\r\n');
+    expect(lines[1]).toBe('1,t,s,f,a,a=b');
+  });
+
   test('quotes a header cell whose attribute name contains a comma', () => {
     const rows = [
       {
