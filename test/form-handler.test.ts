@@ -108,6 +108,12 @@ describe('FormHandlerStack', () => {
     template.hasResourceProperties(
       'AWS::IAM::Policy',
       Match.objectLike({
+        // Naming the role matters: the form-handler Lambda's policy also grants
+        // dynamodb:Query on an index, so without this the assertion passes even
+        // when the admin Lambda has no grant at all.
+        Roles: Match.arrayWith([
+          { Ref: Match.stringLikeRegexp('formhandleradminlambdaServiceRole.*') },
+        ]),
         PolicyDocument: Match.objectLike({
           Statement: Match.arrayWith([
             Match.objectLike({
