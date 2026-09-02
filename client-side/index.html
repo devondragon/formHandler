@@ -9,6 +9,8 @@
     <h1>Contact Form</h1>
 
     <form id="contact-form" class="form-handler-form">
+        <!-- Identifies this form to the form-handler Lambda; required once the forms table has any configuration. -->
+        <input type="hidden" id="formId" name="formId" value="contact">
         <label for="name">Your Name:</label><br>
         <input type="text" id="name" name="name"><br>
         <label for="email">Your Email:</label><br>

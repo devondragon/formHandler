@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Form Handler Admin</title>
+<link rel="stylesheet" href="admin.css">
+</head>
+<body>
+<header>
+  <h1>Form Handler Admin</h1>
+  <button type="button" id="sign-out-btn" hidden>Sign out</button>
+</header>
+
+<main>
+  <section id="login-section">
+    <h2>Sign in</h2>
+    <form id="login-form">
+      <div>
+        <label for="login-email">Email</label>
+        <input type="email" id="login-email" name="email" autocomplete="username" required>
+      </div>
+      <div>
+        <label for="login-password">Password</label>
+        <input type="password" id="login-password" name="password" autocomplete="current-password" required>
+      </div>
+      <button type="submit" id="login-submit-btn">Sign in</button>
+      <p id="login-error" class="error" role="alert"></p>
+    </form>
+
+    <form id="new-password-form" hidden>
+      <h2>Set a new password</h2>
+      <div>
+        <label for="new-password">New password</label>
+        <input type="password" id="new-password" name="newPassword" autocomplete="new-password" required>
+      </div>
+      <div>
+        <label for="new-password-confirm">Confirm new password</label>
+        <input type="password" id="new-password-confirm" name="newPasswordConfirm" autocomplete="new-password" required>
+      </div>
+      <button type="submit" id="new-password-submit-btn">Set password</button>
+      <p id="new-password-error" class="error" role="alert"></p>
+    </form>
+  </section>
+
+  <section id="app" hidden>
+    <h2>Forms</h2>
+    <button type="button" id="new-form-btn">New form</button>
+    <p id="forms-error" class="error" role="alert"></p>
+
+    <table id="forms-table">
+      <thead>
+        <tr>
+          <th scope="col">Form ID</th>
+          <th scope="col">Name</th>
+          <th scope="col">Notification email</th>
+          <th scope="col">Notifications</th>
+          <th scope="col">One per IP</th>
+          <th scope="col">Enabled</th>
+          <th scope="col">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="forms-table-body"></tbody>
+    </table>
+
+    <form id="form-editor" hidden>
+      <h3 id="form-editor-title">New form</h3>
+      <div>
+        <label for="editor-form-id">Form ID</label>
+        <input type="text" id="editor-form-id" name="formId" required>
+      </div>
+      <div>
+        <label for="editor-form-name">Form name</label>
+        <input type="text" id="editor-form-name" name="formName" required>
+      </div>
+      <div>
+        <label for="editor-notification-email">Notification email</label>
+        <input type="email" id="editor-notification-email" name="notificationEmail">
+      </div>
+      <div>
+        <label for="editor-email-notifications-enabled">
+          <input type="checkbox" id="editor-email-notifications-enabled" name="emailNotificationsEnabled">
+          Email notifications enabled
+        </label>
+      </div>
+      <div>
+        <label for="editor-one-submission-per-ip">
+          <input type="checkbox" id="editor-one-submission-per-ip" name="oneSubmissionPerIp">
+          One submission per IP
+        </label>
+      </div>
+      <div>
+        <label for="editor-enabled">
+          <input type="checkbox" id="editor-enabled" name="enabled">
+          Enabled
+        </label>
+      </div>
+      <button type="submit" id="editor-save-btn">Save</button>
+      <button type="button" id="editor-cancel-btn">Cancel</button>
+      <p id="editor-error" class="error" role="alert"></p>
+    </form>
+  </section>
+</main>
+
+<script src="admin.js" data-config='__ADMIN_CONFIG__'></script>
+</body>
+</html>
