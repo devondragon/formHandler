@@ -15,6 +15,9 @@
     try {
       return JSON.parse(raw) || {};
     } catch (err) {
+      // Nothing on the page can recover from this, but a silent empty config
+      // shows up later as an unexplained Cognito failure; say so in the console.
+      console.warn('Could not parse the admin config data attribute', err);
       return {};
     }
   }
@@ -378,6 +381,11 @@
   var submissionRows = [];
   var submissionsCursor = null;
 
+  // The filter values the loaded rows were fetched with. "Load more" sends
+  // these rather than re-reading the inputs, so editing a filter without
+  // clicking Apply cannot page a different result set onto the current one.
+  var appliedFilters = { from: '', to: '', q: '' };
+
   // Requests in flight, and an id identifying the newest list request. "Back to
   // forms" is clickable while a request is in flight, so a response can arrive
   // after the view has moved to another form; anything but the newest id is a
@@ -442,6 +450,7 @@
     submissionsForm = form;
     submissionRows = [];
     submissionsCursor = null;
+    appliedFilters = { from: '', to: '', q: '' };
     if (els.submissionsFilters) {
       els.submissionsFilters.reset();
     }
@@ -500,7 +509,17 @@
     if (!submissionsForm) {
       return;
     }
-    var filters = submissionFilters();
+    if (!append) {
+      // A fresh load replaces the result set, so the old cursor belongs to a
+      // scan that is about to be discarded. Drop it and hide the button before
+      // the request goes out, so a click while it is in flight cannot append a
+      // page of the previous result set.
+      submissionsCursor = null;
+      if (els.submissionsLoadMoreBtn) {
+        els.submissionsLoadMoreBtn.hidden = true;
+      }
+    }
+    var filters = append ? appliedFilters : submissionFilters();
     var path = submissionsPath('', {
       from: filters.from,
       to: filters.to,
@@ -515,6 +534,9 @@
       .then(function (data) {
         if (requestId !== submissionsRequestId) {
           return;
+        }
+        if (!append) {
+          appliedFilters = filters;
         }
         var rows = (data && data.submissions) || [];
         submissionRows = append ? submissionRows.concat(rows) : rows;
@@ -607,6 +629,11 @@
 
   // ---- Exports ----
 
+  // Shown when the response carries X-Truncated: the file saved, but the server
+  // dropped rows past one of its export caps.
+  var EXPORT_TRUNCATED_MESSAGE =
+    'Export capped (10,000 rows or 5 MB). Narrow the date range to get the rest.';
+
   function filenameFromDisposition(header, fallback) {
     var match = header ? /filename="([^"]+)"/i.exec(header) : null;
     return match ? match[1] : fallback;
@@ -672,8 +699,13 @@
           response.headers.get('Content-Disposition'),
           fallbackName
         );
+        // Headers have to be read before the body is consumed.
+        var truncated = response.headers.get('X-Truncated');
         return response.blob().then(function (blob) {
           saveBlob(blob, filename);
+          if (truncated) {
+            setSubmissionsError(EXPORT_TRUNCATED_MESSAGE);
+          }
         });
       })
       .catch(function (err) {
