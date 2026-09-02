@@ -14,6 +14,13 @@ describe('FormHandlerStack', () => {
   ] as const;
   const savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
 
+  // Synthesizing the stack is the slow part of this suite, so it happens once
+  // and every assertion test reads the same template and cloud assembly. The
+  // "throws when ... is unset" tests below still build their own stack, since
+  // they need a different environment.
+  let template: Template;
+  let assemblyDir: string;
+
   beforeAll(() => {
     // Guard against dotenv reading a developer's .env file: set the
     // required environment variables explicitly before the stack is
@@ -26,6 +33,11 @@ describe('FormHandlerStack', () => {
     process.env.EMAIL_FROM = 'test@test.com';
     process.env.EMAIL_TO = 'me@example.com';
     process.env.ADMIN_EMAIL = 'admin@example.com';
+
+    const app = new cdk.App();
+    const stack = new FormHandlerStack(app, 'MyTestStack');
+    template = Template.fromStack(stack);
+    assemblyDir = app.synth().directory;
   });
 
   afterAll(() => {
@@ -39,15 +51,7 @@ describe('FormHandlerStack', () => {
     }
   });
 
-  const buildTemplate = (): Template => {
-    const app = new cdk.App();
-    const stack = new FormHandlerStack(app, 'MyTestStack');
-    return Template.fromStack(stack);
-  };
-
   test('creates exactly three Lambda functions on the Node 24 runtime', () => {
-    const template = buildTemplate();
-
     template.resourcePropertiesCountIs(
       'AWS::Lambda::Function',
       { Runtime: 'nodejs24.x' },
@@ -56,14 +60,10 @@ describe('FormHandlerStack', () => {
   });
 
   test('creates two DynamoDB tables', () => {
-    const template = buildTemplate();
-
     template.resourceCountIs('AWS::DynamoDB::Table', 2);
   });
 
   test('creates three log groups with a one week retention and no explicit name', () => {
-    const template = buildTemplate();
-
     template.resourcePropertiesCountIs(
       'AWS::Logs::LogGroup',
       { RetentionInDays: 7 },
@@ -77,8 +77,6 @@ describe('FormHandlerStack', () => {
   });
 
   test('all three Lambda functions reference a CDK-managed log group', () => {
-    const template = buildTemplate();
-
     template.resourcePropertiesCountIs(
       'AWS::Lambda::Function',
       {
@@ -91,8 +89,6 @@ describe('FormHandlerStack', () => {
   });
 
   test('creates POST and OPTIONS routes on the HTTP API', () => {
-    const template = buildTemplate();
-
     template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
       RouteKey: 'POST /',
     });
@@ -102,8 +98,6 @@ describe('FormHandlerStack', () => {
   });
 
   test('the forms table is keyed by formId alone', () => {
-    const template = buildTemplate();
-
     template.hasResourceProperties('AWS::DynamoDB::Table', {
       TableName: 'forms',
       KeySchema: Match.exact([{ AttributeName: 'formId', KeyType: 'HASH' }]),
@@ -111,8 +105,6 @@ describe('FormHandlerStack', () => {
   });
 
   test('creates a single admin user pool that only administrators can add users to', () => {
-    const template = buildTemplate();
-
     template.resourceCountIs('AWS::Cognito::UserPool', 1);
     template.hasResourceProperties('AWS::Cognito::UserPool', {
       AdminCreateUserConfig: Match.objectLike({
@@ -122,8 +114,6 @@ describe('FormHandlerStack', () => {
   });
 
   test('the admin user pool client enables the username/password auth flow and has no secret', () => {
-    const template = buildTemplate();
-
     template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
       ExplicitAuthFlows: Match.arrayWith(['ALLOW_USER_PASSWORD_AUTH']),
       GenerateSecret: false,
@@ -131,8 +121,6 @@ describe('FormHandlerStack', () => {
   });
 
   test('the admin user pool client has OAuth disabled (no hosted-UI flows or callback)', () => {
-    const template = buildTemplate();
-
     template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
       AllowedOAuthFlowsUserPoolClient: Match.anyValue(),
     });
@@ -145,8 +133,6 @@ describe('FormHandlerStack', () => {
   });
 
   test('creates the initial admin user from ADMIN_EMAIL', () => {
-    const template = buildTemplate();
-
     template.hasResourceProperties('AWS::Cognito::UserPoolUser', {
       Username: 'admin@example.com',
       DesiredDeliveryMediums: ['EMAIL'],
@@ -158,8 +144,6 @@ describe('FormHandlerStack', () => {
   });
 
   test('serves the admin UI on unauthenticated routes', () => {
-    const template = buildTemplate();
-
     for (const routeKey of ['GET /', 'GET /admin.js', 'GET /admin.css']) {
       template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
         RouteKey: routeKey,
@@ -169,8 +153,6 @@ describe('FormHandlerStack', () => {
   });
 
   test('protects the admin JSON API with the JWT authorizer', () => {
-    const template = buildTemplate();
-
     template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
       RouteKey: 'ANY /api/{proxy+}',
       AuthorizationType: 'JWT',
@@ -182,8 +164,6 @@ describe('FormHandlerStack', () => {
   });
 
   test('creates a second HTTP API for the admin interface', () => {
-    const template = buildTemplate();
-
     template.resourceCountIs('AWS::ApiGatewayV2::Api', 2);
     template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
       Name: 'form-handler-admin',
@@ -191,10 +171,7 @@ describe('FormHandlerStack', () => {
   });
 
   test('bundles the admin UI files into the admin Lambda asset', () => {
-    const app = new cdk.App();
-    new FormHandlerStack(app, 'MyTestStack');
-    const assembly = app.synth();
-    const outdir = assembly.directory;
+    const outdir = assemblyDir;
 
     // esbuild bundling copies functions/admin/ui/* to <outputDir>/ui via
     // afterBundling; the asset directory itself is named asset.<hash> in the
@@ -211,8 +188,6 @@ describe('FormHandlerStack', () => {
   });
 
   test('outputs the admin URL and Cognito identifiers', () => {
-    const template = buildTemplate();
-
     for (const outputName of ['AdminUrl', 'AdminUserPoolId', 'AdminUserPoolClientId', 'HttpApiUrl']) {
       template.hasOutput(outputName, {});
     }

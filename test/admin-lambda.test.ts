@@ -64,9 +64,23 @@ const existingForm = {
   updatedAt: '2020-01-01T00:00:00.000Z',
 };
 
+const ENV_KEYS = [
+  'FORM_TABLE_NAME',
+  'USER_POOL_ID',
+  'USER_POOL_CLIENT_ID',
+  'AWS_REGION',
+  'COGNITO_REGION',
+] as const;
+let savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
+
 beforeEach(() => {
   jest.spyOn(console, 'warn').mockImplementation(() => {});
   jest.spyOn(console, 'error').mockImplementation(() => {});
+
+  savedEnv = {};
+  for (const key of ENV_KEYS) {
+    savedEnv[key] = process.env[key];
+  }
 
   ddbMock.reset();
   process.env.FORM_TABLE_NAME = 'forms';
@@ -78,6 +92,15 @@ beforeEach(() => {
 
 afterEach(() => {
   jest.restoreAllMocks();
+
+  for (const key of ENV_KEYS) {
+    const original = savedEnv[key];
+    if (original === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = original;
+    }
+  }
 });
 
 const EXPECTED_CONFIG_ATTRIBUTE =
