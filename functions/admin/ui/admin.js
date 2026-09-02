@@ -1,8 +1,26 @@
 (function () {
   'use strict';
 
+  // `document.currentScript` is only this script element while the script is
+  // running synchronously, so read it first, before anything else. The Lambda
+  // renders the Cognito config into the tag's data-config attribute; the page
+  // has no inline script, so it can be served under script-src 'self'.
+  var scriptEl = document.currentScript;
+
+  function readConfig() {
+    var raw = scriptEl && scriptEl.dataset ? scriptEl.dataset.config : null;
+    if (!raw) {
+      return {};
+    }
+    try {
+      return JSON.parse(raw) || {};
+    } catch (err) {
+      return {};
+    }
+  }
+
   var ID_TOKEN_KEY = 'formHandlerAdminIdToken';
-  var config = window.ADMIN_CONFIG || {};
+  var config = readConfig();
   var cognitoEndpoint = 'https://cognito-idp.' + config.region + '.amazonaws.com/';
 
   // Set while a NEW_PASSWORD_REQUIRED challenge is in progress.
@@ -20,6 +38,7 @@
     els.newPasswordForm = document.getElementById('new-password-form');
     els.newPassword = document.getElementById('new-password');
     els.newPasswordConfirm = document.getElementById('new-password-confirm');
+    els.newPasswordSubmitBtn = document.getElementById('new-password-submit-btn');
     els.newPasswordError = document.getElementById('new-password-error');
     els.app = document.getElementById('app');
     els.formsTableBody = document.getElementById('forms-table-body');
@@ -338,9 +357,14 @@
       els.newPasswordError.textContent = 'Passwords do not match';
       return;
     }
-    respondToNewPasswordChallenge(els.newPassword.value).catch(function (err) {
-      els.newPasswordError.textContent = err.message;
-    });
+    els.newPasswordSubmitBtn.disabled = true;
+    respondToNewPasswordChallenge(els.newPassword.value)
+      .catch(function (err) {
+        els.newPasswordError.textContent = err.message;
+      })
+      .finally(function () {
+        els.newPasswordSubmitBtn.disabled = false;
+      });
   }
 
   function onSignOut() {

@@ -26,7 +26,10 @@ function readUiFile(name: string): string {
 function json(statusCode: number, body: unknown): APIGatewayProxyResultV2 {
   return {
     statusCode,
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+    },
     body: JSON.stringify(body),
   };
 }
@@ -42,22 +45,58 @@ function serveStatic(name: string, contentType: string): APIGatewayProxyResultV2
   };
 }
 
-/** Serves `ui/index.html` with the Cognito config placeholders replaced from env. */
+/**
+ * Escapes a value for use inside an HTML attribute. Both quote characters are
+ * escaped, so the result is safe in a single- or double-quoted attribute and a
+ * config value containing a quote cannot close the attribute and inject markup.
+ */
+function escapeHtmlAttribute(value: string): string {
+  return value
+    .split('&').join('&amp;')
+    .split('<').join('&lt;')
+    .split('>').join('&gt;')
+    .split('"').join('&quot;')
+    .split("'").join('&#39;');
+}
+
+/**
+ * Serves `ui/index.html`, passing the Cognito config to the page as a data
+ * attribute on the script tag. The page carries no inline script, so it can be
+ * served under a `script-src 'self'` content security policy.
+ */
 function serveIndexHtml(): APIGatewayProxyResultV2 {
   const region = process.env.AWS_REGION || process.env.COGNITO_REGION || '';
-  const userPoolId = process.env.USER_POOL_ID || '';
-  const userPoolClientId = process.env.USER_POOL_CLIENT_ID || '';
+  const config = {
+    region,
+    userPoolId: process.env.USER_POOL_ID || '',
+    clientId: process.env.USER_POOL_CLIENT_ID || '',
+  };
 
   const html = readUiFile('index.html')
-    .split('__COGNITO_REGION__').join(JSON.stringify(region))
-    .split('__USER_POOL_ID__').join(JSON.stringify(userPoolId))
-    .split('__USER_POOL_CLIENT_ID__').join(JSON.stringify(userPoolClientId));
+    .split('__ADMIN_CONFIG__')
+    .join(escapeHtmlAttribute(JSON.stringify(config)));
+
+  // `connect-src` has to name the regional Cognito endpoint that admin.js posts
+  // the InitiateAuth/RespondToAuthChallenge calls to.
+  const csp = [
+    "default-src 'self'",
+    `connect-src 'self' https://cognito-idp.${region}.amazonaws.com`,
+    "img-src 'self' data:",
+    "style-src 'self'",
+    "script-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+  ].join('; ');
 
   return {
     statusCode: 200,
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-store',
+      'X-Frame-Options': 'DENY',
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy': csp,
     },
     body: html,
   };
@@ -145,13 +184,13 @@ async function route(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResu
 
   if (rawPath === '/admin.js') {
     return method === 'GET'
-      ? serveStatic('admin.js', 'application/javascript')
+      ? serveStatic('admin.js', 'application/javascript; charset=utf-8')
       : json(405, { message: 'Method not allowed' });
   }
 
   if (rawPath === '/admin.css') {
     return method === 'GET'
-      ? serveStatic('admin.css', 'text/css')
+      ? serveStatic('admin.css', 'text/css; charset=utf-8')
       : json(405, { message: 'Method not allowed' });
   }
 

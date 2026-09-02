@@ -80,8 +80,23 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
+const EXPECTED_CONFIG_ATTRIBUTE =
+  'data-config=\'{&quot;region&quot;:&quot;us-east-1&quot;,' +
+  '&quot;userPoolId&quot;:&quot;us-east-1_ABC123&quot;,' +
+  '&quot;clientId&quot;:&quot;client123abc&quot;}\'';
+
+const EXPECTED_CSP =
+  "default-src 'self'; " +
+  'connect-src \'self\' https://cognito-idp.us-east-1.amazonaws.com; ' +
+  "img-src 'self' data:; " +
+  "style-src 'self'; " +
+  "script-src 'self'; " +
+  "frame-ancestors 'none'; " +
+  "base-uri 'none'; " +
+  "form-action 'self'";
+
 describe('static UI serving', () => {
-  test('GET / returns 200 HTML with placeholders replaced by JSON-encoded env values and Cache-Control: no-store', async () => {
+  test('GET / returns 200 HTML carrying the Cognito config as an escaped data attribute', async () => {
     const result = (await adminModule.handler(
       makeEvent('GET', '/')
     )) as APIGatewayProxyStructuredResultV2;
@@ -89,15 +104,62 @@ describe('static UI serving', () => {
     expect(result.statusCode).toBe(200);
     expect(result.headers?.['Content-Type']).toBe('text/html; charset=utf-8');
     expect(result.headers?.['Cache-Control']).toBe('no-store');
-    expect(result.body).toContain(JSON.stringify('us-east-1'));
-    expect(result.body).toContain(JSON.stringify('us-east-1_ABC123'));
-    expect(result.body).toContain(JSON.stringify('client123abc'));
-    expect(result.body).not.toContain('__COGNITO_REGION__');
-    expect(result.body).not.toContain('__USER_POOL_ID__');
-    expect(result.body).not.toContain('__USER_POOL_CLIENT_ID__');
+    expect(result.body).toContain(EXPECTED_CONFIG_ATTRIBUTE);
+    // No template placeholder of any kind survives into the served page.
+    expect(result.body).not.toMatch(/__[A-Z_]+__/);
   });
 
-  test('GET /index.html serves the same placeholder-replaced page as GET /', async () => {
+  test('GET / sets the frame, sniffing, and content security policy headers', async () => {
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/')
+    )) as APIGatewayProxyStructuredResultV2;
+
+    expect(result.headers?.['X-Frame-Options']).toBe('DENY');
+    expect(result.headers?.['X-Content-Type-Options']).toBe('nosniff');
+    expect(result.headers?.['Content-Security-Policy']).toBe(EXPECTED_CSP);
+  });
+
+  test('the served page contains no inline script or event handler the CSP would block', async () => {
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/')
+    )) as APIGatewayProxyStructuredResultV2;
+
+    const body = result.body as string;
+    expect(body).not.toMatch(/<script(?![^>]*\ssrc=)/i);
+    expect(body).not.toMatch(/\son[a-z]+\s*=/i);
+    expect(body).not.toMatch(/\sstyle\s*=/i);
+  });
+
+  test('config values containing quotes cannot break out of the data attribute', async () => {
+    const hostile = 'abc\'"><script>alert(1)</script>&';
+    process.env.USER_POOL_CLIENT_ID = hostile;
+
+    const result = (await adminModule.handler(
+      makeEvent('GET', '/')
+    )) as APIGatewayProxyStructuredResultV2;
+
+    const body = result.body as string;
+    expect(body).not.toContain('<script>alert(1)</script>');
+    expect(body).not.toContain(hostile);
+
+    // What the browser will do: take the attribute, decode the character
+    // references, and JSON.parse the result.
+    const attribute = /data-config='([^']*)'/.exec(body);
+    expect(attribute).not.toBeNull();
+    const decoded = (attribute as RegExpExecArray)[1]
+      .split('&#39;').join("'")
+      .split('&quot;').join('"')
+      .split('&gt;').join('>')
+      .split('&lt;').join('<')
+      .split('&amp;').join('&');
+    expect(JSON.parse(decoded)).toEqual({
+      region: 'us-east-1',
+      userPoolId: 'us-east-1_ABC123',
+      clientId: hostile,
+    });
+  });
+
+  test('GET /index.html serves the same page as GET /', async () => {
     const result = (await adminModule.handler(
       makeEvent('GET', '/index.html')
     )) as APIGatewayProxyStructuredResultV2;
@@ -105,8 +167,8 @@ describe('static UI serving', () => {
     expect(result.statusCode).toBe(200);
     expect(result.headers?.['Content-Type']).toBe('text/html; charset=utf-8');
     expect(result.headers?.['Cache-Control']).toBe('no-store');
-    expect(result.body).toContain(JSON.stringify('us-east-1'));
-    expect(result.body).not.toContain('__COGNITO_REGION__');
+    expect(result.headers?.['Content-Security-Policy']).toBe(EXPECTED_CSP);
+    expect(result.body).toContain(EXPECTED_CONFIG_ATTRIBUTE);
   });
 
   test('GET /admin.js returns 200 with application/javascript content type', async () => {
@@ -115,7 +177,7 @@ describe('static UI serving', () => {
     )) as APIGatewayProxyStructuredResultV2;
 
     expect(result.statusCode).toBe(200);
-    expect(result.headers?.['Content-Type']).toBe('application/javascript');
+    expect(result.headers?.['Content-Type']).toBe('application/javascript; charset=utf-8');
     expect(result.headers?.['Cache-Control']).toBe('no-store');
   });
 
@@ -125,7 +187,7 @@ describe('static UI serving', () => {
     )) as APIGatewayProxyStructuredResultV2;
 
     expect(result.statusCode).toBe(200);
-    expect(result.headers?.['Content-Type']).toBe('text/css');
+    expect(result.headers?.['Content-Type']).toBe('text/css; charset=utf-8');
     expect(result.headers?.['Cache-Control']).toBe('no-store');
   });
 });
@@ -145,6 +207,8 @@ describe('GET /api/forms', () => {
 
     expect(result.statusCode).toBe(200);
     expect(result.headers?.['Content-Type']).toBe('application/json');
+    // Form configuration is per-session data; no intermediary may cache it.
+    expect(result.headers?.['Cache-Control']).toBe('no-store');
     const parsed = JSON.parse(result.body as string);
     expect(parsed.forms.map((f: any) => f.formId)).toEqual(['apple-form', 'zebra-form']);
   });

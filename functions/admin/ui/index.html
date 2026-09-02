@@ -38,7 +38,7 @@
         <label for="new-password-confirm">Confirm new password</label>
         <input type="password" id="new-password-confirm" name="newPasswordConfirm" autocomplete="new-password" required>
       </div>
-      <button type="submit">Set password</button>
+      <button type="submit" id="new-password-submit-btn">Set password</button>
       <p id="new-password-error" class="error" role="alert"></p>
     </form>
   </section>
@@ -102,13 +102,6 @@
   </section>
 </main>
 
-<script>
-  window.ADMIN_CONFIG = {
-    region: __COGNITO_REGION__,
-    userPoolId: __USER_POOL_ID__,
-    clientId: __USER_POOL_CLIENT_ID__
-  };
-</script>
-<script src="admin.js"></script>
+<script src="admin.js" data-config='__ADMIN_CONFIG__'></script>
 </body>
 </html>
